@@ -135,11 +135,6 @@ function isValidPlay(cardToPlay, lastPlayedCard, currentColor) {
         return true;
     }
 
-    // Jika ada pendingDraw (dari +2 atau +4), hanya bisa dibalas dengan +2 atau +4 yang sesuai
-    // (Logika ini akan lebih kompleks dan biasanya ditangani di applyCardEffect atau playCard)
-    // Untuk isValidPlay sederhana, kita anggap pemain sedang tidak dalam kondisi pendingDraw yang menghalangi.
-
-    // Kartu harus cocok dengan warna atau tipe kartu terakhir yang dimainkan
     // Jika warna kartu yang dimainkan cocok dengan currentColor
     if (cardToPlay.color === currentColor) {
         return true;
@@ -185,18 +180,12 @@ function playCard(gameState, playerIndex, cardToPlay, chosenColor = null) {
     // Tentukan warna saat ini
     if (cardToPlay.color === 'WILD' && chosenColor) {
         gameState.currentColor = chosenColor;
-    } else {
+    } else if (cardToPlay.color !== 'WILD') { // Warna kartu normal menjadi warna aktif
         gameState.currentColor = cardToPlay.color;
     }
 
     // Terapkan efek kartu dan tentukan giliran berikutnya
     applyCardEffect(gameState, cardToPlay);
-
-    // Pindah ke giliran pemain berikutnya, kecuali ada efek kartu yang mengubahnya
-    if (cardToPlay.type !== 'SKIP' && cardToPlay.type !== 'REVERSE' && cardToPlay.type !== 'WILD_DRAW_FOUR' && cardToPlay.type !== 'DRAW_TWO') {
-        moveToNextPlayer(gameState);
-    }
-    // (Efek skip/reverse/draw four/draw two akan memanggil moveToNextPlayer atau mengubah indeks di dalam applyCardEffect)
 
     return gameState;
 }
@@ -246,8 +235,8 @@ function applyCardEffect(gameState, card) {
     switch (card.type) {
         case 'SKIP':
             console.log('Efek SKIP: Melewatkan giliran pemain berikutnya.');
-            moveToNextPlayer(gameState); // Maju sekali untuk melewatkan pemain berikutnya
-            moveToNextPlayer(gameState); // Maju lagi untuk ke pemain setelah yang dilewatkan
+            moveToNextPlayer(gameState); // Pindah ke pemain yang dilewati
+            moveToNextPlayer(gameState); // Pindah ke pemain setelah yang dilewati
             gameState.messages.push({ type: 'info', text: `Giliran dilewati untuk pemain berikutnya.` });
             break;
         case 'REVERSE':
@@ -266,24 +255,18 @@ function applyCardEffect(gameState, card) {
         case 'DRAW_TWO':
             console.log('Efek DRAW_TWO: Pemain berikutnya mengambil 2 kartu.');
             gameState.pendingDraw += 2;
-            moveToNextPlayer(gameState); // Pindah ke pemain berikutnya
-            // Pemain berikutnya akan mengambil kartu di awal giliran mereka
-            handlePendingDraw(gameState); // Segera terapkan efek
+            moveToNextPlayer(gameState); // Pindah ke pemain yang terkena efek
+            handlePendingDraw(gameState); // Segera terapkan efek dan lewati giliran mereka
             gameState.messages.push({ type: 'info', text: `Pemain berikutnya mengambil 2 kartu.` });
             break;
         case 'WILD_DRAW_FOUR':
             console.log('Efek WILD_DRAW_FOUR: Pemain berikutnya mengambil 4 kartu.');
             gameState.pendingDraw += 4;
-            moveToNextPlayer(gameState); // Pindah ke pemain berikutnya
-            handlePendingDraw(gameState); // Segera terapkan efek
+            moveToNextPlayer(gameState); // Pindah ke pemain yang terkena efek
+            handlePendingDraw(gameState); // Segera terapkan efek dan lewati giliran mereka
             gameState.messages.push({ type: 'info', text: `Pemain berikutnya mengambil 4 kartu.` });
             break;
-        // Kartu WILD hanya mengubah warna, tidak ada efek tambahan yang mempengaruhi giliran di sini
-        case 'WILD':
-            gameState.messages.push({ type: 'info', text: `Warna berubah menjadi ${gameState.currentColor}.` });
-            moveToNextPlayer(gameState); // Pindah giliran secara normal
-            break;
-        default: // Kartu angka
+        default: // Kartu angka dan WILD (jika bukan Draw Four)
             moveToNextPlayer(gameState); // Pindah giliran secara normal
             break;
     }
@@ -305,7 +288,6 @@ function handlePendingDraw(gameState) {
         moveToNextPlayer(gameState);
     }
 }
-
 
 /**
  * Memindahkan giliran ke pemain berikutnya berdasarkan arah.
