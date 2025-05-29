@@ -1,0 +1,10 @@
+name = "uno-game-server" # Ganti dengan nama unik untuk Worker Anda
+main = "index.js"      # Menunjuk ke file entry point Worker Anda
+compatibility_date = "2024-05-29" # Gunakan tanggal saat ini atau terbaru
+workers_dev = true # Opsional: Izinkan akses melalui subdomain workers.dev Anda
+
+# Untuk pengembangan lokal, Anda mungkin ingin mengaktifkan live-reload atau mode dev
+# [dev]
+# ip = "0.0.0.0"
+# port = 8787
+# local_protocol = "http"
