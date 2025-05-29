@@ -9,21 +9,32 @@
 <body>
     <div class="game-container">
         <h1>Uno Online</h1>
+
+        <div class="room-controls">
+            <h2>Bergabung atau Buat Room</h2>
+            <div class="room-input-group">
+                <input type="text" id="roomCodeInput" placeholder="Masukkan kode room">
+                <button id="joinRoomBtn">Gabung Room</button>
+            </div>
+            <button id="createRoomBtn">Buat Room Baru</button>
+            <p id="roomStatusMessage" class="message-item info"></p>
+        </div>
+
         <div class="discard-pile">
-            <div class="card back"></div> <div class="card-display" id="discardPileTopCard">
-                </div>
+            <div class="card back"></div>
+            <div class="card-display" id="discardPileTopCard"></div>
         </div>
 
         <div class="player-area" id="playerHand">
             <h2>Tangan Pemain Anda:</h2>
-            <div class="hand-cards">
-                </div>
+            <div class="hand-cards"></div>
             <button id="drawCardBtn">Ambil Kartu</button>
         </div>
 
-        <div class="messages" id="gameMessages">
-            </div>
+        <div class="messages" id="gameMessages"></div>
     </div>
 
-    <script src="../shared/uno-logic.js"></script> <script src="app.js"></script> </body>
+    <script src="../shared/uno-logic.js"></script>
+    <script src="app.js"></script>
+</body>
 </html>
