@@ -1,0 +1,210 @@
+body {
+    font-family: 'Arial', sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: #333;
+    color: #eee;
+    margin: 0;
+    overflow: hidden; /* Prevent scrollbar for now */
+}
+
+.game-container {
+    background-color: #222;
+    border-radius: 15px;
+    padding: 20px;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+    text-align: center;
+    width: 90%;
+    max-width: 1000px;
+}
+
+h1 {
+    color: #00bcd4; /* Cyan color */
+    margin-bottom: 20px;
+}
+
+/* --- Gaya Kartu Umum --- */
+.card {
+    width: 70px; /* Lebar kartu */
+    height: 100px; /* Tinggi kartu */
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px;
+    margin: 5px;
+    font-weight: bold;
+    font-size: 1.5em;
+    color: white; /* Warna teks default untuk angka/simbol */
+    box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    position: relative; /* Untuk posisi simbol pojok */
+    overflow: hidden; /* Pastikan konten dalam kartu tidak meluap */
+    border: 2px solid rgba(255, 255, 255, 0.3); /* Border putih tipis */
+    transition: transform 0.1s ease-in-out;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+}
+
+/* --- Simbol Angka/Aksi di Tengah Kartu --- */
+.card .card-center-symbol {
+    font-size: 2em; /* Ukuran angka/simbol di tengah */
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2; /* Di atas background oval */
+}
+
+/* --- Simbol Angka/Aksi di Pojok Kartu --- */
+.card .card-corner-symbol {
+    font-size: 0.8em; /* Ukuran angka/simbol di pojok */
+    position: absolute;
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+    z-index: 2; /* Di atas background oval */
+}
+
+.card .corner-top-left { top: 5px; left: 5px; }
+.card .corner-bottom-right { bottom: 5px; right: 5px; transform: rotate(180deg); }
+
+/* --- Oval Putih di Tengah Kartu --- */
+.card::before {
+    content: '';
+    position: absolute;
+    width: 80%; /* Lebar oval */
+    height: 80%; /* Tinggi oval */
+    background-color: white;
+    border-radius: 50%; /* Membuat bentuk oval/lingkaran */
+    z-index: 1; /* Di bawah simbol */
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.2);
+}
+
+/* --- Warna Kartu --- */
+.card.RED { background-color: #e74c3c; }
+.card.YELLOW { background-color: #f1c40f; }
+.card.GREEN { background-color: #2ecc71; }
+.card.BLUE { background-color: #3498db; }
+
+/* --- Kartu WILD (hitam) --- */
+.card.WILD {
+    background: linear-gradient(45deg, #e74c3c, #f1c40f, #2ecc71, #3498db); /* Gradient warna */
+    border: 2px solid white; /* Border putih untuk Wild */
+    color: white;
+}
+.card.WILD::before {
+    background-color: black; /* Lingkaran hitam di tengah Wild */
+}
+.card.WILD .card-center-symbol,
+.card.WILD .card-corner-symbol {
+    color: white; /* Simbol Wild tetap putih */
+    text-shadow: 1px 1px 2px rgba(255,255,255,0.5);
+}
+
+
+/* --- Desain Kartu Belakang (Draw Pile) --- */
+.card.back {
+    background-color: #2c3e50; /* Warna biru gelap */
+    color: white;
+    font-size: 3em;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    /* Efek untuk 'UNO' */
+    background-image: repeating-linear-gradient(45deg,
+        rgba(255,255,255,0.1) 0px, rgba(255,255,255,0.1) 5px,
+        transparent 5px, transparent 10px);
+    border: 2px solid #34495e;
+}
+.card.back::before {
+    content: 'UNO'; /* Tulisan UNO di tengah kartu belakang */
+    color: white;
+    text-shadow: 2px 2px 5px rgba(0,0,0,0.7);
+    font-size: 0.8em;
+    z-index: 2;
+    background-color: transparent; /* Hilangkan lingkaran putih default */
+    border-radius: 0;
+    width: auto;
+    height: auto;
+}
+.card.back:hover {
+    transform: translateY(-5px) scale(1.02);
+}
+
+/* --- Area Permainan --- */
+.discard-pile {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 20px 0;
+    min-height: 120px; /* Agar ada ruang untuk kartu */
+}
+
+.discard-pile .card-display {
+    margin-left: -30px; /* Tumpuk sedikit dengan kartu belakang */
+    position: relative;
+    z-index: 10;
+}
+
+.player-area {
+    margin-top: 30px;
+    border-top: 1px solid #444;
+    padding-top: 20px;
+}
+
+.hand-cards {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px; /* Jarak antar kartu */
+    margin-top: 15px;
+    min-height: 120px; /* Agar ada ruang untuk kartu */
+}
+
+#drawCardBtn {
+    background-color: #00bcd4;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    margin-top: 20px;
+    transition: background-color 0.2s ease;
+}
+
+#drawCardBtn:hover {
+    background-color: #0097a7;
+}
+
+.messages {
+    background-color: #444;
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 20px;
+    min-height: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 0.9em;
+}
+
+/* Gaya untuk pesan notifikasi */
+.message-item {
+    padding: 5px 10px;
+    border-radius: 5px;
+    margin: 5px 0;
+    color: #fff;
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+.message-item.info { background-color: #3498db; } /* Biru */
+.message-item.success { background-color: #2ecc71; } /* Hijau */
+.message-item.warning { background-color: #f1c40f; } /* Kuning */
+.message-item.error { background-color: #e74c3c; } /* Merah */
