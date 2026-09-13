@@ -283,5 +283,64 @@ send(M2, { type: 'CHAT_SEND', text: 'hai' });
 ok(String(M2.last('ERROR')?.message).includes('room'), 'chat dari luar room ditolak');
 M2.close(); K.close(); L.close();
 
+// ===========================================================================
+console.log('\n--- 10. Saklar aturan rumahan ---');
+const N = await connect(), O = await connect();
+send(N, { type: 'CREATE_ROOM', playerId: 'player_NNN', profile: { name: 'Nia', avatar: 'a01' } });
+const rRoom = N.last('ROOM_CREATED');
+ok(rRoom.rules?.multiPlay === false, 'room baru: aturan rumahan mati (default)');
+send(O, { type: 'JOIN_ROOM', roomCode: rRoom.roomCode, playerId: 'player_OOO', profile: { name: 'Oki', avatar: 'a02' } });
+
+send(O, { type: 'SET_RULES', multiPlay: true, stacking: true });
+ok(String(O.last('ERROR')?.message).includes('pembuat room'), 'non-host tidak bisa mengubah aturan');
+
+N.clear();
+send(N, { type: 'SET_RULES', multiPlay: true, stacking: true });
+const upd = await waitFor(N, 'ROOM_UPDATE', 2000);
+ok(upd?.rules?.multiPlay === true && upd?.rules?.stacking === true, 'host menyalakan aturan -> ROOM_UPDATE memuat aturan');
+ok(String(O.last('ERROR')?.message || '').includes('pembuat room'), '  -> O tidak dapat error baru');
+
+N.clear(); O.clear();
+send(N, { type: 'SET_RULES', multiPlay: false, stacking: false });
+const upd2 = await waitFor(N, 'ROOM_UPDATE', 2000);
+ok(upd2?.rules?.multiPlay === false, 'host bisa mematikan lagi');
+
+// --- room pertama: mulai dengan aturan MATI ---
+send(N, { type: 'START_GAME' });
+const stA = N.last('GAME_STATE_UPDATE');
+ok(stA?.gameState?.rules?.multiPlay === false, 'game dimulai dengan aturan mati');
+ok(stA?.gameState?.pendingDraw === 0, '  -> tidak ada hukuman menggantung di awal');
+
+N.clear();
+send(N, { type: 'PLAY_CARD', cards: [{ color: 'RED', type: '5' }, { color: 'BLUE', type: '5' }], chosenColor: null });
+ok(String(N.last('ERROR')?.message).includes('sedang mati'),
+   'aturan mati -> keluar 2 kartu ditolak dengan alasan jelas');
+
+O.clear();
+send(O, { type: 'SET_RULES', multiPlay: true, stacking: true });
+ok(String(O.last('ERROR')?.message || '').includes('sedang berjalan') ||
+   String(O.last('ERROR')?.message || '').includes('pembuat room'),
+   'aturan tidak bisa diubah di tengah game');
+N.close(); O.close();
+
+// --- room kedua: mulai dengan aturan NYALA ---
+const P = await connect(), Q = await connect();
+send(P, { type: 'CREATE_ROOM', playerId: 'player_PPP', profile: { name: 'Putri', avatar: 'a03' } });
+const r2 = P.last('ROOM_CREATED').roomCode;
+send(Q, { type: 'JOIN_ROOM', roomCode: r2, playerId: 'player_QQQ', profile: { name: 'Qori', avatar: 'a04' } });
+send(P, { type: 'SET_RULES', multiPlay: true, stacking: true });
+send(P, { type: 'START_GAME' });
+const stB = P.last('GAME_STATE_UPDATE');
+ok(stB?.gameState?.rules?.multiPlay === true && stB?.gameState?.rules?.stacking === true,
+   'game dimulai dengan aturan nyala, dan aturannya sampai ke state game');
+
+P.clear();
+send(P, { type: 'PLAY_CARD', cards: [{ color: 'RED', type: '5' }, { color: 'BLUE', type: '5' }], chosenColor: null });
+const errNyala = String(P.last('ERROR')?.message || '');
+ok(!errNyala.includes('sedang mati'), `aturan nyala -> lolos gerbang aturan ("${errNyala}")`);
+ok(errNyala.includes('tidak Anda pegang') || errNyala.includes('cocok dengan meja') || errNyala.includes('sama angka'),
+   '  -> ditolak karena alasan kartu, bukan karena aturan');
+P.close(); Q.close();
+
 console.log(fail === 0 ? '\n=== E2E SERVER: SEMUA LULUS ===' : `\n=== E2E SERVER: ${fail} GAGAL ===`);
 process.exit(fail ? 1 : 0);

@@ -8,6 +8,9 @@
 import {
     initializeGame,
     playCard,
+    playCards,
+    validatePlaySet,
+    resolvePendingDraw,
     playerDrawsCard,
     UNO_COLORS,
     UNO_NUMBERS,
@@ -215,6 +218,7 @@ export class UnoServer {
             type: 'ROOM_UPDATE',
             roomCode,
             hostId: this.rooms.get(roomCode)?.hostId ?? null,
+            rules: this.rooms.get(roomCode)?.rules ?? null,
             playerList: this.publicPlayers(this.rooms.get(roomCode))
         });
     }
@@ -235,7 +239,9 @@ export class UnoServer {
             hostId: hostId ?? null,
             mode,
             game: null,
-            botTimer: null
+            botTimer: null,
+            // Aturan rumahan, ditentukan pembuat room. Default mati.
+            rules: { multiPlay: false, stacking: false }
         };
         this.rooms.set(code, room);
         return room;
@@ -306,6 +312,7 @@ export class UnoServer {
             pendingDraw: game.pendingDraw,
             deckCount: game.deck.length,
             winner: game.winner,
+            rules: game.rules,
             messages: pendingMessages
         };
     }
@@ -336,7 +343,7 @@ export class UnoServer {
             return;
         }
 
-        const state = initializeGame(numPlayers);
+        const state = initializeGame(numPlayers, room.rules);
         if (!state) {
             this.broadcast(roomCode, { type: 'ERROR', message: 'Gagal menginisialisasi game.' });
             return;
@@ -404,8 +411,10 @@ export class UnoServer {
         if (action.kind === 'play') {
             const updated = playCard(room.game, index, action.card, action.chosenColor);
             if (!updated) {
-                // Jaring pengaman: kalau bot memilih kartu tak valid, ambil kartu saja.
-                playerDrawsCard(room.game, index, true);
+                // Jaring pengaman: kalau bot memilih kartu tak valid, ambil hukuman
+                // kalau ada, kalau tidak ambil satu kartu biasa.
+                if (room.game.pendingDraw > 0) resolvePendingDraw(room.game, index);
+                else playerDrawsCard(room.game, index, true);
                 this.broadcastGameState(roomCode);
                 this.maybeRunBots(roomCode);
                 return;
@@ -420,6 +429,10 @@ export class UnoServer {
                 this.endGame(roomCode, index);
                 return;
             }
+        } else if (room.game.pendingDraw > 0) {
+            // Bot memilih menyerah: ambil seluruh hukuman, bukan satu kartu.
+            resolvePendingDraw(room.game, index);
+            this.broadcastGameState(roomCode);
         } else {
             playerDrawsCard(room.game, index, true);
             this.broadcastGameState(roomCode);
@@ -596,6 +609,7 @@ export class UnoServer {
                     roomCode: room.code,
                     playerId,
                     hostId: room.hostId,
+                    rules: room.rules,
                     playerList: this.publicPlayers(room)
                 });
                 console.log(`Room dibuat: ${room.code} oleh ${profile.name} (${playerId})`);
@@ -644,6 +658,7 @@ export class UnoServer {
                     roomCode: room.code,
                     playerId,
                     hostId: room.hostId,
+                    rules: room.rules,
                     playerList: this.publicPlayers(room)
                 });
                 this.broadcastLobby(room.code);
@@ -761,6 +776,30 @@ export class UnoServer {
                 return;
             }
 
+        // ------------------------------------------------------- ATURAN RUMAHAN
+        case 'SET_RULES': {
+            const { meta, room } = session;
+            if (!meta || !room) {
+                this.sendError(server, 'Anda tidak sedang berada di room mana pun.');
+                return;
+            }
+            if (!this.isHost(room, meta.playerId)) {
+                this.sendError(server, 'Hanya pembuat room yang bisa mengubah aturan.');
+                return;
+            }
+            if (room.game) {
+                this.sendError(server, 'Aturan tidak bisa diubah saat game berjalan.');
+                return;
+            }
+
+            room.rules = {
+                multiPlay: Boolean(message.multiPlay),
+                stacking: Boolean(message.stacking)
+            };
+            this.broadcastLobby(meta.roomCode);
+            return;
+        }
+
             // -------------------------------------------------------------- CHAT
             case 'CHAT_SEND': {
                 const { meta, room } = session;
@@ -805,6 +844,14 @@ export class UnoServer {
                     return;
                 }
 
+                // Ada hukuman menggantung (aturan menumpuk): ambil semuanya.
+                if (room.game.pendingDraw > 0) {
+                    resolvePendingDraw(room.game, playerIndex);
+                    this.broadcastGameState(meta.roomCode);
+                    this.maybeRunBots(meta.roomCode);
+                    return;
+                }
+
                 const updated = playerDrawsCard(room.game, playerIndex, true);
                 if (!updated) {
                     this.sendError(server, 'Tidak dapat mengambil kartu (dek habis).');
@@ -830,14 +877,24 @@ export class UnoServer {
                     return;
                 }
 
-                const card = this.sanitizeCard(message.card);
-                if (!card) {
-                    this.sendError(server, 'Data kartu tidak valid.');
+                // Klien boleh kirim satu kartu (card) atau beberapa (cards).
+                const raw = Array.isArray(message.cards) ? message.cards : [message.card];
+                if (raw.length === 0 || raw.length > 8) {
+                    this.sendError(server, 'Jumlah kartu tidak masuk akal.');
                     return;
+                }
+                const cards = [];
+                for (const c of raw) {
+                    const clean = this.sanitizeCard(c);
+                    if (!clean) {
+                        this.sendError(server, 'Data kartu tidak valid.');
+                        return;
+                    }
+                    cards.push(clean);
                 }
 
                 let chosenColor = null;
-                if (card.color === 'WILD') {
+                if (cards.some((c) => c.color === 'WILD')) {
                     chosenColor = typeof message.chosenColor === 'string' ? message.chosenColor.toUpperCase() : null;
                     if (!UNO_COLORS.includes(chosenColor)) {
                         this.sendError(server, 'Warna pilihan tidak valid untuk kartu Wild.');
@@ -845,7 +902,13 @@ export class UnoServer {
                     }
                 }
 
-                const updated = playCard(room.game, playerIndex, card, chosenColor);
+                const reason = validatePlaySet(room.game, playerIndex, cards, chosenColor);
+                if (reason) {
+                    this.sendError(server, reason);
+                    return;
+                }
+
+                const updated = playCards(room.game, playerIndex, cards, chosenColor);
                 if (!updated) {
                     this.sendError(server, 'Kartu tidak valid untuk dimainkan.');
                     return;

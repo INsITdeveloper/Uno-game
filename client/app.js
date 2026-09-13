@@ -73,6 +73,11 @@ const el = {
     discardPileTopCard: $('discardPileTopCard'),
     drawPile: $('drawPile'),
     playerHand: document.querySelector('.hand-cards'),
+    playSelectedBtn: $('playSelectedBtn'),
+    handHint: $('handHint'),
+    penaltyBanner: $('penaltyBanner'),
+    rulesToggle: $('rulesToggle'),
+    rulesHint: $('rulesHint'),
     rematchBtn: $('rematchBtn'),
     leaveGameBtn: $('leaveGameBtn'),
 
@@ -101,8 +106,15 @@ const app = {
     gameRunning: false,
     isMyTurn: false,
     autoBot: false,   // true = setelah room dibuat, langsung tambah bot & mulai
-    screen: null
+    screen: null,
+    rules: { multiPlay: false, stacking: false },
+    selected: []      // daftar "warna|tipe" kartu yang sedang dipilih
 };
+
+/** Aturan efektif: state game lebih baru daripada state lobby. */
+function activeRules() {
+    return (app.game && app.game.rules) || app.rules || { multiPlay: false, stacking: false };
+}
 
 // ---------------------------------------------------------------------------
 // Util
@@ -345,6 +357,66 @@ function appendChat(msg) {
     el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
 
+// --- Pilih beberapa kartu -------------------------------------------------
+
+function toggleSelect(card) {
+    const key = `${card.color}|${card.type}`;
+    const i = app.selected.indexOf(key);
+    if (i !== -1) app.selected.splice(i, 1);
+    else app.selected.push(key);
+    renderGame();
+}
+
+/** Ubah daftar pilihan jadi objek kartu nyata yang diambil dari tangan. */
+function resolveSelectedCards() {
+    const pool = [...((app.game && app.game.playerHand) || [])];
+    const out = [];
+    for (const key of app.selected) {
+        const [color, type] = key.split('|');
+        const idx = pool.findIndex((c) => c.color === color && c.type === type);
+        if (idx === -1) continue;
+        out.push({ color: pool[idx].color, type: pool[idx].type });
+        pool.splice(idx, 1);
+    }
+    return out;
+}
+
+async function sendPlay(cards) {
+    if (!app.isMyTurn) {
+        showMessage('Belum giliranmu.', 'warning');
+        return;
+    }
+    if (!cards.length) return;
+
+    let chosenColor = null;
+    if (cards.some((c) => c.color === 'WILD')) {
+        chosenColor = await pickColor();
+        if (!chosenColor) {
+            showMessage('Pemilihan warna dibatalkan.', 'warning');
+            return;
+        }
+    }
+
+    app.selected = [];
+    send({ type: 'PLAY_CARD', cards, chosenColor });
+}
+
+/**
+ * Tap pada kartu: kalau ada kartu sejenis di tangan, masuk mode pilih supaya
+ * bisa keluar beberapa sekaligus. Kalau tidak ada, langsung main seperti biasa.
+ */
+function onCardTap(card) {
+    const rules = activeRules();
+    const hand = (app.game && app.game.playerHand) || [];
+    const sejenis = hand.filter((c) => c.type === card.type).length > 1;
+
+    if (rules.multiPlay && card.color !== 'WILD' && (app.selected.length > 0 || sejenis)) {
+        toggleSelect(card);
+        return;
+    }
+    sendPlay([{ color: card.color, type: card.type }]);
+}
+
 function sendChat() {
     const text = el.chatInput.value.trim();
     if (!text) return;
@@ -536,6 +608,10 @@ function renderLobby() {
     });
 
     const host = isHost();
+    el.rulesToggle.checked = Boolean(app.rules.multiPlay);
+    el.rulesToggle.disabled = !host;
+    el.rulesHint.hidden = host;
+
     const botCount = app.playerList.filter((p) => p.isBot).length;
     el.addBotBtn.disabled = !host || botCount >= 3 || app.playerList.length >= 10;
     el.startGameBtn.disabled = !host || app.playerList.length < 2;
@@ -588,6 +664,9 @@ function renderGame() {
         el.discardPileTopCard.innerHTML = '';
         el.drawPile.classList.remove('can-draw');
         el.rematchBtn.hidden = true;
+        el.playSelectedBtn.hidden = true;
+        el.handHint.hidden = true;
+        el.penaltyBanner.hidden = true;
         return;
     }
 
@@ -676,10 +755,20 @@ function renderGame() {
     const overlap = n <= 8 ? 16 : (n <= 12 ? 28 : 38);
     el.playerHand.style.setProperty('--overlap', `${overlap}px`);
 
+    // Hitung berapa kartu per jenis yang sedang dipilih (untuk kartu kembar)
+    const selectedCount = {};
+    for (const k of app.selected) selectedCount[k] = (selectedCount[k] || 0) + 1;
+    const usedSoFar = {};
+
     hand.forEach((card, index) => {
+        const key = `${card.color}|${card.type}`;
+        const isSelected = (usedSoFar[key] || 0) < (selectedCount[key] || 0);
+        if (isSelected) usedSoFar[key] = (usedSoFar[key] || 0) + 1;
+
         const playable = game.winner === null && isMyTurn &&
             isCardPlayable(card, topCard, game.currentColor);
-        const cardEl = createCardElement(card, { playable, onClick: () => handlePlayCard(card) });
+        const cardEl = createCardElement(card, { playable, onClick: () => onCardTap(card) });
+        if (isSelected) cardEl.classList.add('selected');
 
         const d = index - mid;
         const rot = Math.min(Math.abs(d), 6) * (d < 0 ? -1 : 1) * 3;
@@ -695,6 +784,23 @@ function renderGame() {
     // Mengambil kartu dilakukan dengan menekan tumpukan — tidak ada tombol kedua.
     el.drawPile.classList.toggle('can-draw', app.isMyTurn);
     el.rematchBtn.hidden = !(game.winner !== null && isHost());
+
+    // Tombol mainkan hanya muncul saat ada kartu yang dipilih
+    const picked = app.selected.length;
+    el.playSelectedBtn.hidden = picked === 0;
+    el.playSelectedBtn.disabled = !app.isMyTurn;
+    el.playSelectedBtn.textContent = picked > 1 ? `Mainkan (${picked} kartu)` : 'Mainkan';
+    el.handHint.hidden = !(activeRules().multiPlay && picked === 0 && isMyTurn && game.winner === null);
+
+    // Peringatan hukuman menggantung
+    if (game.pendingDraw > 0) {
+        el.penaltyBanner.hidden = false;
+        el.penaltyBanner.textContent = isMyTurn
+            ? `Hukuman ${game.pendingDraw} kartu — tumpuk +2/+4, atau tekan tumpukan untuk mengambil`
+            : `Hukuman ${game.pendingDraw} kartu menunggu`;
+    } else {
+        el.penaltyBanner.hidden = true;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -726,24 +832,6 @@ function pickColor() {
     });
 }
 
-async function handlePlayCard(card) {
-    if (!app.isMyTurn) {
-        showMessage('Belum giliranmu.', 'warning');
-        return;
-    }
-
-    let chosenColor = null;
-    if (card.color === 'WILD') {
-        chosenColor = await pickColor();
-        if (!chosenColor) {
-            showMessage('Pemilihan warna dibatalkan.', 'warning');
-            return;
-        }
-    }
-
-    send({ type: 'PLAY_CARD', card: { color: card.color, type: card.type }, chosenColor });
-}
-
 function drawCard() {
     if (!app.isMyTurn) {
         showMessage('Belum giliranmu.', 'warning');
@@ -763,6 +851,21 @@ el.nameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitProfile();
 });
 el.editProfileBtn.addEventListener('click', () => openProfileScreen(app.profile));
+
+el.playSelectedBtn.addEventListener('click', () => {
+    const cards = resolveSelectedCards();
+    if (!cards.length) {
+        app.selected = [];
+        renderGame();
+        return;
+    }
+    sendPlay(cards);
+});
+
+// Aturan rumahan (khusus pembuat room)
+el.rulesToggle.addEventListener('change', () => {
+    send({ type: 'SET_RULES', multiPlay: el.rulesToggle.checked, stacking: el.rulesToggle.checked });
+});
 
 // Upload avatar sendiri ke CDN INS
 el.uploadAvatarBtn.addEventListener('click', () => el.avatarFileInput.click());
@@ -873,6 +976,8 @@ function resetToHome() {
     app.isMyTurn = false;
     app.autoBot = false;
     el.chatLog.innerHTML = '';
+    app.selected = [];
+    app.rules = { multiPlay: false, stacking: false };
     renderGame();
     showScreen('home');
 }
@@ -884,6 +989,7 @@ function handleServerMessage(message) {
             app.roomCode = message.roomCode;
             app.playerList = message.playerList || [];
             app.hostId = message.hostId;
+            app.rules = message.rules || app.rules;
             app.game = null;
             app.gameRunning = false;
             showMessage(`Room dibuat: ${message.roomCode}`, 'success');
@@ -897,6 +1003,7 @@ function handleServerMessage(message) {
             app.roomCode = message.roomCode;
             app.playerList = message.playerList || [];
             app.hostId = message.hostId;
+            app.rules = message.rules || app.rules;
             app.game = null;
             app.gameRunning = false;
             showMessage(`Bergabung ke room ${message.roomCode}.`, 'success');
@@ -908,6 +1015,7 @@ function handleServerMessage(message) {
         case 'ROOM_UPDATE':
             app.playerList = message.playerList || [];
             app.hostId = message.hostId;
+            app.rules = message.rules || app.rules;
             renderLobby();
             if (app.autoBot && app.playerList.length >= 2) {
                 app.autoBot = false;
@@ -961,6 +1069,7 @@ function handleServerMessage(message) {
 
         case 'GAME_STATE_UPDATE':
             app.game = message.gameState;
+            app.selected = [];   // indeks kartu bergeser, pilihan lama tidak valid lagi
             (message.gameState.messages || []).forEach((m) => showMessage(m.text, m.type));
             if (!app.gameRunning) {
                 app.gameRunning = true;

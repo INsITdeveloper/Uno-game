@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node tests/sim.mjs && node tests/bot.mjs && node tests/server-e2e.mjs",
+    "test": "node tests/sim.mjs && node tests/bot.mjs && node tests/house-rules.mjs && node tests/server-e2e.mjs",
     "cards": "python3 tools/generate_cards.py",
     "avatars": "python3 tools/generate_avatars.py",
     "test:cdn": "RUN_CDN_TEST=1 node tests/cdn-upload.mjs",

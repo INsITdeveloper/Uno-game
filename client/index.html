@@ -100,6 +100,19 @@
             <h2>Room <span class="room-code" id="roomCodeLabel">-----</span></h2>
             <p class="hint">Bagikan kode ini ke temanmu, atau tambah bot untuk langsung main.</p>
             <div class="player-grid" id="lobbyPlayers"></div>
+
+            <div class="rules-box">
+                <label class="switch-row">
+                    <input type="checkbox" id="rulesToggle">
+                    <span class="switch-text">
+                        <strong>Aturan Rumahan</strong>
+                        <small>Angka atau simbol sama boleh keluar bareng (RED 5 + BLUE 5),
+                               dan +2/+4 bisa ditumpuk untuk memindahkan hukuman.</small>
+                    </span>
+                </label>
+                <p class="hint" id="rulesHint" hidden>Hanya pembuat room yang bisa mengubah aturan ini.</p>
+            </div>
+
             <div class="row">
                 <button id="addBotBtn">+ Tambah Bot</button>
                 <button id="startGameBtn" class="primary">Mulai Game</button>
@@ -129,11 +142,16 @@
                 </div>
 
                 <div class="turn-banner" id="turnIndicator">Menunggu&hellip;</div>
+                <div class="penalty-banner" id="penaltyBanner" hidden></div>
             </div>
         </div>
 
         <div class="hand-zone" id="playerHand">
             <div class="hand-cards"></div>
+            <div class="hand-actions">
+                <button id="playSelectedBtn" class="primary" hidden>Mainkan</button>
+                <span class="hand-hint" id="handHint" hidden>Pilih kartu yang sama, lalu tekan Mainkan</span>
+            </div>
         </div>
 
         <div class="row game-actions">

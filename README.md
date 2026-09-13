@@ -22,6 +22,11 @@ Server = Cloudflare Worker (WebSocket) yang jadi satu-satunya penentu sah/tidakn
 - **Bot** — memilih kartu berwarna sama lebih dulu, menyimpan Wild selama masih ada
   kartu normal, memakai kartu serang saat lawan hampir habis, dan memilih warna
   terbanyak di tangannya. Ada jeda berpikir 0,7–1,4 detik supaya terasa natural.
+- **Aturan rumahan (opsional, ditentukan pembuat room)** — kalau dinyalakan:
+  kartu dengan **angka atau simbol sama** boleh keluar sekaligus (RED 5 + BLUE 5,
+  SKIP + SKIP), dan **+2/+4 bisa ditumpuk** untuk memindahkan hukuman ke pemain
+  berikutnya sampai ada yang menyerah dan mengambil semuanya. Default **mati**,
+  jadi perilaku bawaannya tetap seperti sekarang.
 - **Obrolan room** — chat teks antar pemain di lobby maupun saat bermain. Teks
   dibersihkan dari karakter kontrol dan dibatasi 200 karakter di server.
 - **Anti-curang** — identitas pemain diambil dari koneksi WebSocket (bukan dari isi
@@ -71,6 +76,7 @@ npm test
 |---|---|
 | `tests/sim.mjs` | dek 108 kartu, aturan main, anti-cheat, efek kartu khusus, reshuffle, 30 game sampai selesai |
 | `tests/bot.mjs` | identitas bot, strategi (kartu normal sebelum Wild, warna mayoritas), 40 game bot penuh |
+| `tests/house-rules.mjs` | aturan rumahan: multi-kartu, efek aksi berlapis (2x SKIP, 2x +2), rantai tumpuk +2/+4, bot paham menumpuk, 45 simulasi penuh |
 | `tests/server-e2e.mjs` | profil, avatar custom, lobby, hak host, bot jalan sendiri, matchmaking, fallback bot, keluar saat game |
 | `tests/cdn-upload.mjs` | **tidak ikut `npm test`** — upload sungguhan ke CDN INS. Jalankan `npm run test:cdn` |
 | `tests/production-check.mjs` | **tidak ikut `npm test`** — uji Worker yang sudah ter-deploy: halaman, aset, gabung room 8x, matchmaking, chat. Jalankan `npm run test:prod` |
@@ -150,7 +156,8 @@ npm run test:cdn
 | `LEAVE_ROOM` | – | Keluar dari room |
 | `ADD_BOT` / `REMOVE_BOT` | `botId` | Kelola bot (khusus host, hanya sebelum game) |
 | `START_GAME` | – | Mulai game (khusus host, min. 2 pemain) |
-| `PLAY_CARD` | `card:{color,type}`, `chosenColor` | `chosenColor` wajib untuk Wild |
+| `SET_RULES` | `multiPlay`, `stacking` | Nyalakan/matikan aturan rumahan (khusus host, hanya sebelum game) |
+| `PLAY_CARD` | `cards:[{color,type}]` (atau `card`), `chosenColor` | `cards` boleh >1 kalau aturan rumahan nyala. `chosenColor` wajib untuk Wild |
 | `DRAW_CARD` | – | Ambil satu kartu lalu akhiri giliran |
 
 `profile` = `{ name: string (1–16), avatar: 'a01'…'a14', avatarUrl?: string }` —
@@ -182,6 +189,27 @@ Butuh `Pillow` (`pip install Pillow`).
 
 Punggung kartu default adalah `BACK_ornate.jpg` (ilustrasi ornamen). Ganti ke
 `assets/cards/BACK.png` di `client/index.html` kalau mau versi flat hasil generator.
+
+## Aturan rumahan
+
+Dinyalakan pembuat room dari lobby. Ada dua bagian yang menyala bersamaan:
+
+**Keluar beberapa kartu sekaligus.** Kartu dengan angka atau simbol sama boleh
+dimainkan dalam satu giliran, bebas warna. Efeknya menumpuk: 2x SKIP melewati
+2 pemain, 2x +2 membuat lawan mengambil 4 kartu, 2x REVERSE membalik arah dua kali.
+Kartu Wild dan +4 **tidak** bisa diikutkan dalam satu set — sengaja, supaya tidak
+bisa membuang semua kartu besar sekaligus. Warna aktif ditentukan kartu terakhir
+yang diletakkan.
+
+**Menumpuk +2/+4.** Hukuman tidak langsung dijatuhkan. Pemain berikutnya boleh
+menumpuk +2/+4 miliknya (tidak perlu cocok warna — itu inti aturannya) untuk
+memindahkan hukuman ke pemain setelahnya. Hukuman terus menumpuk sampai ada yang
+tidak punya +2/+4, lalu orang itu mengambil semuanya dan kehilangan gilirannya.
+Selama hukuman menggantung, kartu biasa tidak bisa dimainkan.
+
+Di klien, saat menumpuk kartu sejenis di tangan, tap menjadi mode pilih: kartu
+terangkat, lalu tekan tombol **Mainkan (n)**. Kalau tidak ada kartu sejenis,
+tap tetap langsung memainkan seperti biasa.
 
 ## Kenapa Durable Object (penting)
 

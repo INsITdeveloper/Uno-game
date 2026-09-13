@@ -65,7 +65,19 @@ export function shuffleDeck(arr) {
  * @param {number} numPlayers
  * @returns {object|null} state game, atau null bila jumlah pemain tidak valid / dek tidak memadai.
  */
-export function initializeGame(numPlayers) {
+/** Aturan rumahan yang bisa dinyalakan pembuat room. */
+export const DEFAULT_RULES = { multiPlay: false, stacking: false };
+
+/** Kartu yang boleh menumpuk di atas hukuman yang menggantung. */
+export const STACKABLE_TYPES = ['DRAW_TWO', 'WILD_DRAW_FOUR'];
+
+/**
+ * @param {number} numPlayers
+ * @param {{multiPlay?: boolean, stacking?: boolean}} [rules]
+ *   multiPlay: beberapa kartu sejenis boleh keluar sekaligus
+ *   stacking : +2/+4 bisa ditumpuk untuk memindahkan hukuman
+ */
+export function initializeGame(numPlayers, rules = {}) {
     if (!Number.isInteger(numPlayers) || numPlayers < MIN_PLAYERS || numPlayers > MAX_PLAYERS) {
         console.error(`Jumlah pemain harus antara ${MIN_PLAYERS} dan ${MAX_PLAYERS}. Diterima: ${numPlayers}`);
         return null;
@@ -118,7 +130,11 @@ export function initializeGame(numPlayers) {
         pendingDraw: 0,
         messages: [],
         winner: null,       // index pemain pemenang, atau null
-        lastDrawnCard: null // hanya dipakai untuk pesan internal server
+        lastDrawnCard: null, // hanya dipakai untuk pesan internal server
+        rules: {
+            multiPlay: Boolean(rules.multiPlay),
+            stacking: Boolean(rules.stacking)
+        }
     };
 }
 
@@ -152,44 +168,108 @@ export function isValidPlay(cardToPlay, lastPlayedCard, currentColor) {
  * @param {string|null} chosenColor - wajib untuk kartu WILD.
  * @returns {object|null} gameState bila berhasil, null bila tidak valid.
  */
-export function playCard(gameState, playerIndex, cardToPlay, chosenColor = null) {
+/**
+ * Periksa satu set kartu yang mau dimainkan bersamaan.
+ * @returns {string|null} pesan alasan kalau ditolak, atau null kalau sah.
+ */
+export function validatePlaySet(gameState, playerIndex, cards, chosenColor = null) {
+    if (!gameState || gameState.winner !== null) return 'Permainan sudah selesai.';
+    if (!Array.isArray(cards) || cards.length === 0) return 'Tidak ada kartu yang dimainkan.';
+
+    const hand = gameState.players[playerIndex];
+    if (!hand) return 'Pemain tidak dikenal.';
+
+    const multiPlay = Boolean(gameState.rules && gameState.rules.multiPlay);
+    if (cards.length > 1 && !multiPlay) {
+        return 'Aturan keluar beberapa kartu sedang mati di room ini.';
+    }
+
+    const key = (c) => `${c.color}|${c.type}`;
+
+    // Anti-curang: tiap kartu harus benar-benar ada di tangan, sehitung jumlahnya
+    const need = new Map();
+    for (const c of cards) {
+        if (!c || typeof c.color !== 'string' || typeof c.type !== 'string') return 'Data kartu tidak valid.';
+        need.set(key(c), (need.get(key(c)) || 0) + 1);
+    }
+    const have = new Map();
+    for (const c of hand) have.set(key(c), (have.get(key(c)) || 0) + 1);
+    for (const [k, n] of need) {
+        if ((have.get(k) || 0) < n) return 'Ada kartu yang tidak Anda pegang.';
+    }
+
+    const first = cards[0];
+
+    // Kalau keluar beberapa sekaligus: harus sejenis, dan Wild tidak boleh ikut
+    if (cards.length > 1) {
+        if (first.color === 'WILD') return 'Kartu Wild tidak bisa dimainkan sekaligus.';
+        for (const c of cards.slice(1)) {
+            if (c.color === 'WILD') return 'Kartu Wild tidak bisa dimainkan sekaligus.';
+            if (c.type !== first.type) return 'Kartu yang keluar bersamaan harus sama angka atau simbolnya.';
+        }
+    }
+
+    if (first.color === 'WILD' && !UNO_COLORS.includes(chosenColor)) {
+        return 'Kartu Wild butuh pilihan warna.';
+    }
+
+    // Ada hukuman menggantung: satu-satunya jalan adalah menumpuk +2/+4.
+    // Menumpuk sengaja TIDAK perlu cocok warna — itu inti aturan ini.
+    if (gameState.pendingDraw > 0) {
+        if (!STACKABLE_TYPES.includes(first.type)) {
+            return `Ada hukuman ${gameState.pendingDraw} kartu. Tumpuk +2/+4, atau ambil kartunya.`;
+        }
+        return null;
+    }
+
+    if (!isValidPlay(first, gameState.lastPlayedCard, gameState.currentColor)) {
+        return 'Kartu pertama tidak cocok dengan meja.';
+    }
+
+    return null;
+}
+
+/**
+ * Memainkan satu atau beberapa kartu sekaligus.
+ * @returns {object|null} gameState bila berhasil, null bila tidak sah.
+ */
+export function playCards(gameState, playerIndex, cards, chosenColor = null) {
     if (!gameState || gameState.winner !== null) return null;
 
-    const playerHand = gameState.players[playerIndex];
-    if (!playerHand) return null;
-
-    const cardIndexInHand = playerHand.findIndex(
-        (c) => c.color === cardToPlay.color && c.type === cardToPlay.type
-    );
-    if (cardIndexInHand === -1) {
-        console.warn(`Pemain ${playerIndex} tidak memiliki kartu ${cardToPlay.color} ${cardToPlay.type}.`);
-        return null; // Anti-cheat: kartu harus benar-benar ada di tangan
-    }
-
-    if (!isValidPlay(cardToPlay, gameState.lastPlayedCard, gameState.currentColor)) {
-        console.warn(`Kartu ${cardToPlay.color} ${cardToPlay.type} tidak valid.`);
+    const problem = validatePlaySet(gameState, playerIndex, cards, chosenColor);
+    if (problem) {
+        console.warn(problem);
         return null;
     }
 
-    const isWild = cardToPlay.color === 'WILD';
-    if (isWild && !UNO_COLORS.includes(chosenColor)) {
-        console.warn('Kartu Wild dimainkan tanpa warna pilihan yang valid.');
-        return null;
+    const hand = gameState.players[playerIndex];
+    const isWild = cards[0].color === 'WILD';
+
+    // Buang tiap kartu dari tangan lalu taruh ke tumpukan buangan
+    const placed = [];
+    for (const c of cards) {
+        const idx = hand.findIndex((h) => h.color === c.color && h.type === c.type);
+        if (idx === -1) return null;
+        hand.splice(idx, 1);
+
+        const cardOnPile = { color: c.color, type: c.type };
+        if (isWild) cardOnPile.chosenColor = chosenColor;
+        gameState.discardPile.push(cardOnPile);
+        placed.push(cardOnPile);
     }
 
-    playerHand.splice(cardIndexInHand, 1);
+    gameState.lastPlayedCard = placed[placed.length - 1];
+    gameState.lastPlayedSet = placed;
+    gameState.currentColor = isWild ? chosenColor : placed[placed.length - 1].color;
 
-    // Simpan representasi bersih ke discard pile (tanpa membocorkan properti internal).
-    const cardOnPile = { color: cardToPlay.color, type: cardToPlay.type };
-    if (isWild) cardOnPile.chosenColor = chosenColor;
-
-    gameState.discardPile.push(cardOnPile);
-    gameState.lastPlayedCard = cardOnPile;
-    gameState.currentColor = isWild ? chosenColor : cardToPlay.color;
-
-    applyCardEffect(gameState, cardOnPile);
+    applySetEffects(gameState, placed);
 
     return gameState;
+}
+
+/** Pembungkus satu kartu — dipakai tes lama dan bot. */
+export function playCard(gameState, playerIndex, cardToPlay, chosenColor = null) {
+    return playCards(gameState, playerIndex, [cardToPlay], chosenColor);
 }
 
 /**
@@ -242,43 +322,92 @@ export function playerDrawsCard(gameState, playerIndex, endTurn = false) {
  * @param {object} gameState
  * @param {{color:string,type:string}} card
  */
-export function applyCardEffect(gameState, card) {
-    switch (card.type) {
+export function applySetEffects(gameState, cards) {
+    const type = cards[0].type;
+    const n = cards.length;
+    const stacking = Boolean(gameState.rules && gameState.rules.stacking);
+    const banyak = n > 1 ? ` (${n} kartu)` : '';
+
+    switch (type) {
         case 'SKIP':
-            moveToNextPlayer(gameState); // lawan berikutnya
-            moveToNextPlayer(gameState); // lewati dia
-            gameState.messages.push({ type: 'info', text: 'Giliran pemain berikutnya dilewati.' });
+            // Lewati n pemain: geser ke lawan, lalu geser lagi n kali
+            for (let i = 0; i < n + 1; i++) moveToNextPlayer(gameState);
+            gameState.messages.push({
+                type: 'info',
+                text: n > 1 ? `Giliran ${n} pemain dilewati.` : 'Giliran pemain berikutnya dilewati.'
+            });
             break;
 
         case 'REVERSE':
-            gameState.direction *= -1;
+            // Tiap kartu membalik arah
+            for (let i = 0; i < n; i++) gameState.direction *= -1;
             if (gameState.players.length === 2) {
-                // Dengan 2 pemain, REVERSE berlaku seperti SKIP.
+                // Dengan 2 pemain, REVERSE berlaku seperti SKIP
                 moveToNextPlayer(gameState);
                 moveToNextPlayer(gameState);
-                gameState.messages.push({ type: 'info', text: 'Arah berubah — giliran lawan dilewati.' });
+                gameState.messages.push({ type: 'info', text: `Arah berubah — giliran lawan dilewati${banyak}.` });
             } else {
                 moveToNextPlayer(gameState);
-                gameState.messages.push({ type: 'info', text: 'Arah permainan berbalik.' });
+                gameState.messages.push({ type: 'info', text: `Arah permainan berbalik${banyak}.` });
             }
             break;
 
         case 'DRAW_TWO':
-            gameState.pendingDraw += 2;
+        case 'WILD_DRAW_FOUR': {
+            const amount = (type === 'DRAW_TWO' ? 2 : 4) * n;
+            gameState.pendingDraw += amount;
             moveToNextPlayer(gameState);
-            handlePendingDraw(gameState);
-            break;
 
-        case 'WILD_DRAW_FOUR':
-            gameState.pendingDraw += 4;
-            moveToNextPlayer(gameState);
-            handlePendingDraw(gameState);
+            if (stacking) {
+                // Hukuman menggantung: pemain berikutnya boleh menumpuk +2/+4
+                // atau mengambil semuanya.
+                const target = gameState.players[gameState.currentPlayerIndex];
+                const bisaTumpuk = target.some((c) => STACKABLE_TYPES.includes(c.type));
+                gameState.messages.push({
+                    type: 'warning',
+                    text: bisaTumpuk
+                        ? `Hukuman ${gameState.pendingDraw} kartu untuk pemain ${gameState.currentPlayerIndex + 1} — tumpuk +2/+4 atau ambil.`
+                        : `Pemain ${gameState.currentPlayerIndex + 1} harus mengambil ${gameState.pendingDraw} kartu.`
+                });
+                gameState.messages.push({
+                    type: 'stack',
+                    pending: gameState.pendingDraw,
+                    to: gameState.currentPlayerIndex
+                });
+            } else {
+                handlePendingDraw(gameState);
+            }
             break;
+        }
 
         default: // kartu angka & WILD biasa
             moveToNextPlayer(gameState);
             break;
     }
+    return gameState;
+}
+
+/** Pembungkus satu kartu untuk kompatibilitas. */
+export function applyCardEffect(gameState, card) {
+    return applySetEffects(gameState, [card]);
+}
+
+/**
+ * Pemain yang kena hukuman mengambil seluruh hukuman lalu kehilangan giliran.
+ * Dipakai saat aturan menumpuk aktif dan pemain memilih mengambil.
+ */
+export function resolvePendingDraw(gameState, playerIndex) {
+    const amount = gameState.pendingDraw;
+    gameState.pendingDraw = 0;
+
+    for (let i = 0; i < amount; i++) playerDrawsCard(gameState, playerIndex, false);
+
+    gameState.messages.push({
+        type: 'warning',
+        text: `Pemain ${playerIndex + 1} mengambil ${amount} kartu.`
+    });
+
+    moveToNextPlayer(gameState);
     return gameState;
 }
 

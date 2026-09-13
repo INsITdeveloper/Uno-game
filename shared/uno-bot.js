@@ -2,7 +2,7 @@
 // Kecerdasan buatan untuk lawan bot.
 // Murni fungsi tanpa efek samping supaya mudah diuji dan dijalankan di server.
 
-import { isValidPlay, UNO_COLORS, UNO_ACTION_CARDS } from './uno-logic.js';
+import { isValidPlay, UNO_COLORS, UNO_ACTION_CARDS, STACKABLE_TYPES } from './uno-logic.js';
 
 export const BOT_NAMES = [
     'Bot Andi', 'Bot Sari', 'Bot Budi', 'Bot Rina', 'Bot Joko',
@@ -69,6 +69,23 @@ function pick(list, rand) {
  */
 export function chooseBotAction(game, playerIndex, rand = Math.random) {
     const hand = game.players[playerIndex] || [];
+
+    // Ada hukuman menggantung: hanya boleh menumpuk +2/+4, atau menyerah.
+    // Menumpuk tidak perlu cocok warna.
+    if (game.pendingDraw > 0) {
+        const stackable = hand.filter((c) => STACKABLE_TYPES.includes(c.type));
+        if (stackable.length === 0) return { kind: 'draw' };
+
+        // Utamakan +2 supaya +4 disimpan untuk momen penting
+        const twos = stackable.filter((c) => c.type === 'DRAW_TWO');
+        const choice = pick(twos.length ? twos : stackable, rand);
+        return {
+            kind: 'play',
+            card: { color: choice.color, type: choice.type },
+            chosenColor: choice.color === 'WILD' ? mostCommonColor(hand, rand) : null
+        };
+    }
+
     const playable = hand.filter((c) => isValidPlay(c, game.lastPlayedCard, game.currentColor));
 
     if (playable.length === 0) {
