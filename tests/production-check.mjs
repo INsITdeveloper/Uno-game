@@ -75,6 +75,16 @@ ok(card.status === 200, `kartu HTTP ${card.status}`);
 const avatar = await fetch(BASE + '/assets/avatars/a01.png', { signal: AbortSignal.timeout(20000) });
 ok(avatar.status === 200, `avatar HTTP ${avatar.status}`);
 
+// Aset UI: font game harus ikut ter-deploy, kalau tidak tampilannya jatuh ke font sistem
+const cssRes = await fetch(BASE + '/style.css', { signal: AbortSignal.timeout(20000) });
+const css = await cssRes.text();
+ok(css.includes('Fredoka'), 'CSS memakai font game (Fredoka)');
+for (const f of ['Fredoka', 'Nunito']) {
+    const r = await fetch(`${BASE}/assets/fonts/${f}.woff2`, { signal: AbortSignal.timeout(20000) });
+    ok(r.status === 200, `font ${f}.woff2 HTTP ${r.status} (${r.headers.get('content-type')})`);
+}
+ok(html.includes('table-felt') && html.includes('logo-uno'), 'struktur UI game terkirim di HTML');
+
 // --- 2. Kode room harus selalu bisa dipakai ---------------------------------
 console.log('\n--- 2. Buat room lalu gabung dari koneksi lain ---');
 let joinOk = 0;
