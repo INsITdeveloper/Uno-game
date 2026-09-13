@@ -73,7 +73,6 @@ const el = {
     discardPileTopCard: $('discardPileTopCard'),
     drawPile: $('drawPile'),
     playerHand: document.querySelector('.hand-cards'),
-    drawCardBtn: $('drawCardBtn'),
     rematchBtn: $('rematchBtn'),
     leaveGameBtn: $('leaveGameBtn'),
 
@@ -587,7 +586,7 @@ function renderGame() {
         el.opponents.innerHTML = '';
         el.playerHand.innerHTML = '';
         el.discardPileTopCard.innerHTML = '';
-        el.drawCardBtn.disabled = true;
+        el.drawPile.classList.remove('can-draw');
         el.rematchBtn.hidden = true;
         return;
     }
@@ -624,7 +623,7 @@ function renderGame() {
 
     el.activeColor.textContent = colorLabel(game.currentColor);
     el.deckInfo.textContent =
-        `Dek ${game.deckCount}` + (game.direction === -1 ? ' ↺' : '');
+        `Ambil kartu · ${game.deckCount}` + (game.direction === -1 ? ' ↺' : '');
 
     // Cahaya di tumpukan buangan mengikuti warna aktif
     const glow = {
@@ -693,7 +692,8 @@ function renderGame() {
         el.playerHand.appendChild(cardEl);
     });
 
-    el.drawCardBtn.disabled = !app.isMyTurn;
+    // Mengambil kartu dilakukan dengan menekan tumpukan — tidak ada tombol kedua.
+    el.drawPile.classList.toggle('can-draw', app.isMyTurn);
     el.rematchBtn.hidden = !(game.winner !== null && isHost());
 }
 
@@ -756,7 +756,6 @@ function drawCard() {
 // Event listener
 // ---------------------------------------------------------------------------
 
-el.drawCardBtn.addEventListener('click', drawCard);
 el.drawPile.addEventListener('click', drawCard);
 
 el.saveProfileBtn.addEventListener('click', submitProfile);
