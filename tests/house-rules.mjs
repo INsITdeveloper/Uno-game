@@ -81,6 +81,43 @@ console.log('\n--- 2. Angka/simbol sama boleh keluar bersamaan ---');
 }
 
 // ===========================================================================
+console.log('\n--- 2b. Skenario dari laporan pemakaian ---');
+{
+    // Meja RED 6. Tangan punya RED 3 dan GREEN 3 (angka sama, beda warna).
+    // GREEN 3 tidak cocok warna meja, tapi harus tetap boleh ikut keluar bareng.
+    const g = setup(2, { multiPlay: true });
+    g.discardPile = [{ color: 'RED', type: '6' }];
+    g.lastPlayedCard = { color: 'RED', type: '6' };
+    g.currentColor = 'RED';
+    g.players[0] = [{ color: 'RED', type: '3' }, { color: 'GREEN', type: '3' }];
+
+    ok(validatePlaySet(g, 0, [{ color: 'GREEN', type: '3' }, { color: 'RED', type: '3' }]) !== null,
+        'GREEN 3 ditaruh paling depan -> ditolak (memang tidak cocok meja)');
+    ok(validatePlaySet(g, 0, [{ color: 'RED', type: '3' }, { color: 'GREEN', type: '3' }]) === null,
+        'RED 3 + GREEN 3 -> SAH walau GREEN tidak cocok warna meja');
+    const r = playCards(g, 0, [{ color: 'RED', type: '3' }, { color: 'GREEN', type: '3' }]);
+    ok(r !== null, '  -> benar-benar bisa dikeluarkan');
+    ok(g.players[0].length === 0, '  -> kedua kartu terpakai dari tangan');
+}
+{
+    // Kebalikannya harus DITOLAK: beda angka walau sama warna.
+    const g = setup(2, { multiPlay: true });
+    g.players[0] = [{ color: 'RED', type: '6' }, { color: 'RED', type: '3' }];
+    ok(validatePlaySet(g, 0, [{ color: 'RED', type: '6' }, { color: 'RED', type: '3' }]) !== null,
+        'RED 6 + RED 3 -> DITOLAK (beda angka) walau dua-duanya cocok warna');
+}
+{
+    // Simbol sama, beda warna.
+    const g = setup(2, { multiPlay: true });
+    g.discardPile = [{ color: 'RED', type: 'SKIP' }];
+    g.lastPlayedCard = { color: 'RED', type: 'SKIP' };
+    g.currentColor = 'RED';
+    g.players[0] = [{ color: 'BLUE', type: 'SKIP' }, { color: 'GREEN', type: 'SKIP' }];
+    ok(validatePlaySet(g, 0, [{ color: 'BLUE', type: 'SKIP' }, { color: 'GREEN', type: 'SKIP' }]) === null,
+        'simbol sama (SKIP) beda warna -> sah');
+}
+
+// ===========================================================================
 console.log('\n--- 3. Efek kartu aksi menumpuk ---');
 {
     const g = setup(4, { multiPlay: true });

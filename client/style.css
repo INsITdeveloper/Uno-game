@@ -786,6 +786,22 @@ input[type="text"]:focus { outline: none; border-color: var(--mint); box-shadow:
     50%      { box-shadow: 0 0 0 12px rgba(255, 107, 107, 0); }
 }
 
+/* --- Animasi kartu dilempar ke meja --------------------------------------- */
+.fly-card {
+    position: fixed;
+    z-index: 900;
+    pointer-events: none;
+    border-radius: 10px;
+    transform-origin: 50% 60%;
+    filter: drop-shadow(0 14px 20px rgba(0, 0, 0, .65));
+    transition:
+        left .42s cubic-bezier(.22, .68, .3, 1),
+        top .42s cubic-bezier(.22, .68, .3, 1),
+        width .42s ease,
+        height .42s ease,
+        transform .42s cubic-bezier(.3, .7, .4, 1);
+}
+
 /* --- Responsif ------------------------------------------------------------ */
 @media (max-width: 640px) {
     body { font-size: 15px; }

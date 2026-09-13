@@ -108,7 +108,8 @@ const app = {
     autoBot: false,   // true = setelah room dibuat, langsung tambah bot & mulai
     screen: null,
     rules: { multiPlay: false, stacking: false },
-    selected: []      // daftar "warna|tipe" kartu yang sedang dipilih
+    selected: [],       // daftar "warna|tipe" kartu yang sedang dipilih
+    skipIncomingAnim: false  // true = animasi lempar sudah dijalankan sendiri
 };
 
 /** Aturan efektif: state game lebih baru daripada state lobby. */
@@ -362,14 +363,32 @@ function appendChat(msg) {
 function toggleSelect(card) {
     const key = `${card.color}|${card.type}`;
     const i = app.selected.indexOf(key);
-    if (i !== -1) app.selected.splice(i, 1);
-    else app.selected.push(key);
+
+    if (i !== -1) {
+        app.selected.splice(i, 1);
+        renderGame();
+        return;
+    }
+
+    // Kartu yang boleh keluar bersamaan harus sejenis. Kalau yang ditabuh beda
+    // jenis, mulai pilihan baru dari kartu itu.
+    if (app.selected.length > 0) {
+        const firstType = app.selected[0].split('|')[1];
+        if (firstType !== card.type) app.selected = [];
+    }
+
+    app.selected.push(key);
     renderGame();
 }
 
 /** Ubah daftar pilihan jadi objek kartu nyata yang diambil dari tangan. */
 function resolveSelectedCards() {
-    const pool = [...((app.game && app.game.playerHand) || [])];
+    const game = app.game || {};
+    const pool = [...(game.playerHand || [])];
+    const topCard = game.discardPile && game.discardPile.length
+        ? game.discardPile[game.discardPile.length - 1]
+        : null;
+
     const out = [];
     for (const key of app.selected) {
         const [color, type] = key.split('|');
@@ -378,10 +397,51 @@ function resolveSelectedCards() {
         out.push({ color: pool[idx].color, type: pool[idx].type });
         pool.splice(idx, 1);
     }
+
+    // Server mewajibkan kartu PERTAMA sah dimainkan sendiri. Jadi kartu yang
+    // cocok dengan meja ditaruh di depan, supaya susunan pilihan tidak jadi soal.
+    out.sort((a, b) => Number(isCardPlayable(b, topCard, game.currentColor)) -
+                       Number(isCardPlayable(a, topCard, game.currentColor)));
     return out;
 }
 
-async function sendPlay(cards) {
+// --- Animasi kartu dilempar ke meja ---------------------------------------
+
+function flyCardToPile(card, from, to, delay = 0) {
+    const img = document.createElement('img');
+    img.src = `assets/cards/${cardImageName(card)}`;
+    img.alt = '';
+    img.className = 'fly-card';
+    img.style.left = `${from.left}px`;
+    img.style.top = `${from.top}px`;
+    img.style.width = `${from.width}px`;
+    img.style.height = `${from.height}px`;
+    img.style.transitionDelay = `${delay}ms`;
+    document.body.appendChild(img);
+
+    requestAnimationFrame(() => {
+        img.style.left = `${to.left}px`;
+        img.style.top = `${to.top}px`;
+        img.style.width = `${to.width}px`;
+        img.style.height = `${to.height}px`;
+        img.style.transform = 'rotate(340deg) scale(1) scaleX(-1)';
+    });
+    setTimeout(() => img.remove(), 560 + delay);
+}
+
+/** Terbangkan beberapa kartu dari titik asal ke tumpukan buangan. */
+function flyCards(cards, sources) {
+    const target = el.discardPileTopCard.getBoundingClientRect();
+    if (!target.width || !sources.length) return;
+    cards.forEach((card, i) => {
+        const src = sources[i] || sources[sources.length - 1];
+        if (!src) return;
+        const from = typeof src.getBoundingClientRect === 'function' ? src.getBoundingClientRect() : src;
+        flyCardToPile(card, from, target, i * 90);
+    });
+}
+
+async function sendPlay(cards, sources = []) {
     if (!app.isMyTurn) {
         showMessage('Belum giliranmu.', 'warning');
         return;
@@ -397,7 +457,14 @@ async function sendPlay(cards) {
         }
     }
 
+    // Kartu yang dipilih diambil elemennya untuk dianimasikan melempar.
+    const from = sources.length
+        ? sources
+        : Array.from(el.playerHand.querySelectorAll('.card.image-card.selected'));
+
     app.selected = [];
+    app.skipIncomingAnim = true;   // jangan animasi dua kali dari update server
+    flyCards(cards, from);
     send({ type: 'PLAY_CARD', cards, chosenColor });
 }
 
@@ -405,16 +472,16 @@ async function sendPlay(cards) {
  * Tap pada kartu: kalau ada kartu sejenis di tangan, masuk mode pilih supaya
  * bisa keluar beberapa sekaligus. Kalau tidak ada, langsung main seperti biasa.
  */
-function onCardTap(card) {
+function onCardTap(card, node) {
     const rules = activeRules();
     const hand = (app.game && app.game.playerHand) || [];
-    const sejenis = hand.filter((c) => c.type === card.type).length > 1;
+    const sejenis = hand.filter((c) => c.type === card.type && c.color !== 'WILD').length > 1;
 
     if (rules.multiPlay && card.color !== 'WILD' && (app.selected.length > 0 || sejenis)) {
         toggleSelect(card);
         return;
     }
-    sendPlay([{ color: card.color, type: card.type }]);
+    sendPlay([{ color: card.color, type: card.type }], node ? [node] : []);
 }
 
 function sendChat() {
@@ -452,6 +519,21 @@ function isCardPlayable(card, topCard, currentColor) {
     if (card.color === currentColor) return true;
     if (card.type === topCard.type) return true;
     return false;
+}
+
+/**
+ * Boleh dipilih atau tidak.
+ *
+ * Saat aturan rumahan nyala, kartu yang TIDAK cocok dengan meja tetap boleh
+ * dipilih kalau ada kartu sejenis di tangan yang cocok — karena nanti dia ikut
+ * keluar bersamaan. Contoh: meja RED 6, tangan punya RED 3 dan GREEN 3;
+ * GREEN 3 tidak cocok warna, tapi boleh ikut menemani RED 3.
+ */
+function isCardSelectable(card, hand, topCard, currentColor) {
+    if (isCardPlayable(card, topCard, currentColor)) return true;
+    if (card.color === 'WILD') return false;
+    return hand.some((c) => c !== card && c.type === card.type &&
+        isCardPlayable(c, topCard, currentColor));
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +727,7 @@ function createCardElement(card, { playable = false, small = false, onClick = nu
 
     if (playable && onClick) {
         cardEl.classList.add('playable');
-        cardEl.addEventListener('click', onClick);
+        cardEl.addEventListener('click', () => onClick(cardEl));
     } else {
         cardEl.classList.add('dim');
     }
@@ -720,6 +802,7 @@ function renderGame() {
 
         const seat = document.createElement('div');
         seat.className = 'seat';
+        seat.dataset.playerId = p.id;
         if (p.id === game.currentPlayerId) seat.classList.add('active');
         if (p.count === 0) seat.classList.add('out');
 
@@ -765,9 +848,12 @@ function renderGame() {
         const isSelected = (usedSoFar[key] || 0) < (selectedCount[key] || 0);
         if (isSelected) usedSoFar[key] = (usedSoFar[key] || 0) + 1;
 
+        const bisaMulti = activeRules().multiPlay;
         const playable = game.winner === null && isMyTurn &&
-            isCardPlayable(card, topCard, game.currentColor);
-        const cardEl = createCardElement(card, { playable, onClick: () => onCardTap(card) });
+            (bisaMulti
+                ? isCardSelectable(card, hand, topCard, game.currentColor)
+                : isCardPlayable(card, topCard, game.currentColor));
+        const cardEl = createCardElement(card, { playable, onClick: (node) => onCardTap(card, node) });
         if (isSelected) cardEl.classList.add('selected');
 
         const d = index - mid;
@@ -853,13 +939,14 @@ el.nameInput.addEventListener('keydown', (e) => {
 el.editProfileBtn.addEventListener('click', () => openProfileScreen(app.profile));
 
 el.playSelectedBtn.addEventListener('click', () => {
+    const nodes = Array.from(el.playerHand.querySelectorAll('.card.image-card.selected'));
     const cards = resolveSelectedCards();
     if (!cards.length) {
         app.selected = [];
         renderGame();
         return;
     }
-    sendPlay(cards);
+    sendPlay(cards, nodes);
 });
 
 // Aturan rumahan (khusus pembuat room)
@@ -1067,7 +1154,16 @@ function handleServerMessage(message) {
             renderGame();
             break;
 
-        case 'GAME_STATE_UPDATE':
+        case 'GAME_STATE_UPDATE': {
+            const prevGame = app.game;
+            // Titik asal animasi lempar untuk kartu lawan (kursi yang tadi jalan)
+            let seatFrom = null;
+            if (prevGame && prevGame.currentPlayerId && prevGame.currentPlayerId !== app.localPlayerId) {
+                const seatEl = el.opponents.querySelector(
+                    `.seat[data-player-id="${prevGame.currentPlayerId}"]`);
+                if (seatEl) seatFrom = seatEl.getBoundingClientRect();
+            }
+
             app.game = message.gameState;
             app.selected = [];   // indeks kartu bergeser, pilihan lama tidak valid lagi
             (message.gameState.messages || []).forEach((m) => showMessage(m.text, m.type));
@@ -1076,7 +1172,20 @@ function handleServerMessage(message) {
                 showScreen('game');
             }
             renderGame();
+
+            // Animasi kartu lawan dilempar ke meja
+            if (!app.skipIncomingAnim && prevGame && seatFrom) {
+                const before = (prevGame.discardPile || []).length;
+                const pile = app.game.discardPile || [];
+                if (pile.length > before) {
+                    const target = el.discardPileTopCard.getBoundingClientRect();
+                    pile.slice(before).forEach((card, i) =>
+                        flyCardToPile(card, seatFrom, target, i * 90));
+                }
+            }
+            app.skipIncomingAnim = false;
             break;
+        }
 
         case 'GAME_OVER':
             app.gameRunning = false;
