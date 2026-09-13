@@ -1,6 +1,15 @@
 # Uno Online
 
-Uno multiplayer: profil pemain, matchmaking lawan acak, room privat, dan lawan bot.
+**Game kartu Uno multiplayer di browser. Main langsung di sini:**
+
+### ▶ https://uno-game-server-ins.officialrealmuoriginal.workers.dev/
+
+Tidak perlu daftar. Isi nama, pilih avatar, lalu **Main Lawan Bot** untuk langsung
+jalan — atau **Cari Lawan** untuk dipasangkan dengan pemain lain secara acak.
+
+Fitur: room privat dengan kode 5 karakter, obrolan, avatar upload sendiri,
+lawan bot, aturan rumahan opsional (keluar beberapa kartu sekaligus + tumpuk +2/+4).
+
 Server = Cloudflare Worker (WebSocket) yang jadi satu-satunya penentu sah/tidaknya aksi.
 
 ![preview meja permainan](docs/preview-game.jpg)
