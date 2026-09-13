@@ -1,102 +1,43 @@
 // shared/uno-logic.js
+// Logika inti permainan Uno.
+// File ini adalah SUMBER KEBENARAN dan hanya boleh dijalankan di server.
+// Klien tidak mengimpor file ini (klien punya salinan sederhana hanya untuk highlight kartu).
 
-const UNO_COLORS = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
-const UNO_NUMBERS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-const UNO_ACTION_CARDS = ['SKIP', 'REVERSE', 'DRAW_TWO']; // Kartu aksi berwarna
-const UNO_WILD_CARDS = ['WILD', 'WILD_DRAW_FOUR']; // Kartu Wild
+export const UNO_COLORS = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
+export const UNO_NUMBERS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+export const UNO_ACTION_CARDS = ['SKIP', 'REVERSE', 'DRAW_TWO'];
+export const UNO_WILD_CARDS = ['WILD', 'WILD_DRAW_FOUR'];
 
-/**
- * Menginisialisasi state game Uno baru.
- * @param {number} numPlayers - Jumlah pemain dalam game.
- * @returns {object} Objek state game awal.
- */
-function initializeGame(numPlayers) {
-    if (numPlayers < 2 || numPlayers > 10) {
-        console.error("Jumlah pemain harus antara 2 dan 10.");
-        return null;
-    }
-
-    let deck = createDeck();
-    deck = shuffleDeck(deck);
-
-    const players = [];
-    for (let i = 0; i < numPlayers; i++) {
-        players.push([]); // Setiap pemain mulai dengan tangan kosong
-    }
-
-    // Bagikan 7 kartu ke setiap pemain
-    for (let i = 0; i < 7; i++) {
-        for (let j = 0; j < numPlayers; j++) {
-            if (deck.length > 0) {
-                players[j].push(deck.pop());
-            }
-        }
-    }
-
-    const discardPile = [];
-    let lastPlayedCard = null;
-    let currentColor = null;
-
-    // Mulai discard pile dengan kartu angka (bukan aksi atau wild)
-    while (deck.length > 0) {
-        const topCard = deck.pop();
-        if (UNO_NUMBERS.includes(topCard.type)) {
-            discardPile.push(topCard);
-            lastPlayedCard = topCard;
-            currentColor = topCard.color;
-            break;
-        } else {
-            // Jika kartu pertama bukan angka, masukkan kembali ke dek dan kocok ulang
-            deck.unshift(topCard); // Masukkan kembali ke awal dek
-            deck = shuffleDeck(deck);
-        }
-    }
-
-    if (!lastPlayedCard) {
-        console.error("Tidak dapat menemukan kartu angka untuk memulai permainan.");
-        return null;
-    }
-
-    return {
-        deck: deck,
-        discardPile: discardPile,
-        players: players, // Array of arrays (tangan setiap pemain)
-        currentPlayerIndex: 0,
-        direction: 1, // 1 = searah jarum jam, -1 = berlawanan arah jarum jam
-        lastPlayedCard: lastPlayedCard,
-        currentColor: currentColor,
-        pendingDraw: 0, // Untuk Draw Two / Wild Draw Four
-        messages: [] // Untuk pesan game
-    };
-}
+export const MIN_PLAYERS = 2;
+export const MAX_PLAYERS = 10;
+export const HAND_SIZE = 7;
 
 /**
- * Membuat satu set dek kartu Uno standar.
- * @returns {Array<object>} Array objek kartu.
+ * Membuat satu set dek kartu Uno standar (108 kartu).
+ * @returns {Array<{color: string, type: string}>}
  */
-function createDeck() {
-    let deck = [];
+export function createDeck() {
+    const deck = [];
 
-    // Kartu angka (0-9)
-    UNO_COLORS.forEach(color => {
-        // Satu kartu '0' per warna
-        deck.push({ color: color, type: '0' });
-        // Dua kartu '1' sampai '9' per warna
+    // Kartu angka: satu '0' dan dua '1'-'9' per warna => 76 kartu
+    UNO_COLORS.forEach((color) => {
+        deck.push({ color, type: '0' });
         for (let i = 1; i <= 9; i++) {
-            deck.push({ color: color, type: i.toString() });
-            deck.push({ color: color, type: i.toString() });
+            const value = i.toString();
+            deck.push({ color, type: value });
+            deck.push({ color, type: value });
         }
     });
 
-    // Kartu aksi (SKIP, REVERSE, DRAW_TWO) - dua per warna
-    UNO_COLORS.forEach(color => {
-        UNO_ACTION_CARDS.forEach(type => {
-            deck.push({ color: color, type: type });
-            deck.push({ color: color, type: type });
+    // Kartu aksi berwarna: dua per jenis per warna => 24 kartu
+    UNO_COLORS.forEach((color) => {
+        UNO_ACTION_CARDS.forEach((type) => {
+            deck.push({ color, type });
+            deck.push({ color, type });
         });
     });
 
-    // Kartu Wild dan Wild Draw Four - empat masing-masing
+    // Wild & Wild Draw Four: empat masing-masing => 8 kartu
     for (let i = 0; i < 4; i++) {
         deck.push({ color: 'WILD', type: 'WILD' });
         deck.push({ color: 'WILD', type: 'WILD_DRAW_FOUR' });
@@ -106,117 +47,188 @@ function createDeck() {
 }
 
 /**
- * Mengocok array kartu secara acak (Fisher-Yates shuffle).
- * @param {Array<object>} deck - Dek kartu.
- * @returns {Array<object>} Dek yang sudah dikocok.
+ * Fisher-Yates shuffle. Mengocok in-place dan mengembalikan array yang sama.
+ * @template T
+ * @param {T[]} arr
+ * @returns {T[]}
  */
-function shuffleDeck(deck) {
-    let currentIndex = deck.length, randomIndex;
-
-    while (currentIndex !== 0) {
-        randomIndex = Math.floor(Math.random() * currentIndex);
-        currentIndex--;
-        [deck[currentIndex], deck[randomIndex]] = [
-            deck[randomIndex], deck[currentIndex]];
+export function shuffleDeck(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
     }
-    return deck;
+    return arr;
 }
 
 /**
- * Memeriksa apakah kartu bisa dimainkan.
- * @param {object} cardToPlay - Kartu yang ingin dimainkan.
- * @param {object} lastPlayedCard - Kartu teratas di discard pile.
- * @param {string} currentColor - Warna yang sedang aktif.
- * @returns {boolean} True jika kartu valid dimainkan, false jika tidak.
+ * Inisialisasi state game baru.
+ * @param {number} numPlayers
+ * @returns {object|null} state game, atau null bila jumlah pemain tidak valid / dek tidak memadai.
  */
-function isValidPlay(cardToPlay, lastPlayedCard, currentColor) {
-    // Kartu Wild selalu bisa dimainkan
-    if (cardToPlay.color === 'WILD') {
-        return true;
-    }
-
-    // Jika warna kartu yang dimainkan cocok dengan currentColor
-    if (cardToPlay.color === currentColor) {
-        return true;
-    }
-    // Jika tipe kartu yang dimainkan cocok dengan tipe kartu terakhir
-    if (cardToPlay.type === lastPlayedCard.type) {
-        return true;
-    }
-
-    return false; // Tidak cocok
-}
-
-/**
- * Memainkan kartu.
- * @param {object} gameState - State game saat ini.
- * @param {number} playerIndex - Indeks pemain yang memainkan kartu.
- * @param {object} cardToPlay - Kartu yang dimainkan.
- * @param {string} [chosenColor] - Warna yang dipilih jika kartu adalah WILD.
- * @returns {object|null} State game yang diperbarui, atau null jika tidak valid.
- */
-function playCard(gameState, playerIndex, cardToPlay, chosenColor = null) {
-    const playerHand = gameState.players[playerIndex];
-    const cardIndexInHand = playerHand.findIndex(c => c.color === cardToPlay.color && c.type === cardToPlay.type);
-
-    if (cardIndexInHand === -1) {
-        console.warn(`Pemain ${playerIndex} tidak memiliki kartu ${cardToPlay.color} ${cardToPlay.type} di tangan.`);
-        return null; // Kartu tidak ada di tangan pemain
-    }
-
-    // Validasi apakah kartu bisa dimainkan
-    if (!isValidPlay(cardToPlay, gameState.lastPlayedCard, gameState.currentColor)) {
-        console.warn(`Kartu ${cardToPlay.color} ${cardToPlay.type} tidak valid untuk dimainkan.`);
+export function initializeGame(numPlayers) {
+    if (!Number.isInteger(numPlayers) || numPlayers < MIN_PLAYERS || numPlayers > MAX_PLAYERS) {
+        console.error(`Jumlah pemain harus antara ${MIN_PLAYERS} dan ${MAX_PLAYERS}. Diterima: ${numPlayers}`);
         return null;
     }
 
-    // Hapus kartu dari tangan pemain
-    playerHand.splice(cardIndexInHand, 1);
+    let deck = shuffleDeck(createDeck());
 
-    // Tambahkan kartu ke discard pile
-    gameState.discardPile.push(cardToPlay);
-    gameState.lastPlayedCard = cardToPlay;
-
-    // Tentukan warna saat ini
-    if (cardToPlay.color === 'WILD' && chosenColor) {
-        gameState.currentColor = chosenColor;
-    } else if (cardToPlay.color !== 'WILD') { // Warna kartu normal menjadi warna aktif
-        gameState.currentColor = cardToPlay.color;
+    // Bagikan HAND_SIZE kartu ke setiap pemain
+    const players = Array.from({ length: numPlayers }, () => []);
+    for (let round = 0; round < HAND_SIZE; round++) {
+        for (let p = 0; p < numPlayers; p++) {
+            const card = deck.pop();
+            if (!card) {
+                console.error('Dek habis saat membagikan kartu.');
+                return null;
+            }
+            players[p].push(card);
+        }
     }
 
-    // Terapkan efek kartu dan tentukan giliran berikutnya
-    applyCardEffect(gameState, cardToPlay);
+    // Cari kartu angka untuk membuka discard pile (tanpa loop tak terbatas).
+    let firstCard = null;
+    const rejected = [];
+    while (deck.length > 0) {
+        const candidate = deck.pop();
+        if (UNO_NUMBERS.includes(candidate.type)) {
+            firstCard = candidate;
+            break;
+        }
+        rejected.push(candidate);
+    }
+
+    if (!firstCard) {
+        console.error('Tidak dapat menemukan kartu angka untuk memulai permainan.');
+        return null;
+    }
+
+    // Sisa kartu non-angka dikembalikan ke dek lalu dikocok ulang.
+    deck.push(...rejected);
+    deck = shuffleDeck(deck);
+
+    return {
+        deck,
+        discardPile: [firstCard],
+        players,
+        currentPlayerIndex: 0,
+        direction: 1, // 1 = searah jarum jam, -1 = berlawanan
+        lastPlayedCard: firstCard,
+        currentColor: firstCard.color,
+        pendingDraw: 0,
+        messages: [],
+        winner: null,       // index pemain pemenang, atau null
+        lastDrawnCard: null // hanya dipakai untuk pesan internal server
+    };
+}
+
+/**
+ * Apakah kartu boleh dimainkan?
+ * @param {{color:string,type:string}} cardToPlay
+ * @param {{color:string,type:string}} lastPlayedCard
+ * @param {string} currentColor
+ * @returns {boolean}
+ */
+export function isValidPlay(cardToPlay, lastPlayedCard, currentColor) {
+    if (!cardToPlay || typeof cardToPlay !== 'object') return false;
+
+    // Wild selalu bisa dimainkan
+    if (cardToPlay.color === 'WILD') return true;
+
+    // Warna cocok dengan warna aktif
+    if (cardToPlay.color === currentColor) return true;
+
+    // Tipe cocok dengan kartu teratas (mis. RED SKIP vs BLUE SKIP)
+    if (lastPlayedCard && cardToPlay.type === lastPlayedCard.type) return true;
+
+    return false;
+}
+
+/**
+ * Memainkan kartu. Semua validasi dilakukan di sini.
+ * @param {object} gameState
+ * @param {number} playerIndex
+ * @param {{color:string,type:string}} cardToPlay
+ * @param {string|null} chosenColor - wajib untuk kartu WILD.
+ * @returns {object|null} gameState bila berhasil, null bila tidak valid.
+ */
+export function playCard(gameState, playerIndex, cardToPlay, chosenColor = null) {
+    if (!gameState || gameState.winner !== null) return null;
+
+    const playerHand = gameState.players[playerIndex];
+    if (!playerHand) return null;
+
+    const cardIndexInHand = playerHand.findIndex(
+        (c) => c.color === cardToPlay.color && c.type === cardToPlay.type
+    );
+    if (cardIndexInHand === -1) {
+        console.warn(`Pemain ${playerIndex} tidak memiliki kartu ${cardToPlay.color} ${cardToPlay.type}.`);
+        return null; // Anti-cheat: kartu harus benar-benar ada di tangan
+    }
+
+    if (!isValidPlay(cardToPlay, gameState.lastPlayedCard, gameState.currentColor)) {
+        console.warn(`Kartu ${cardToPlay.color} ${cardToPlay.type} tidak valid.`);
+        return null;
+    }
+
+    const isWild = cardToPlay.color === 'WILD';
+    if (isWild && !UNO_COLORS.includes(chosenColor)) {
+        console.warn('Kartu Wild dimainkan tanpa warna pilihan yang valid.');
+        return null;
+    }
+
+    playerHand.splice(cardIndexInHand, 1);
+
+    // Simpan representasi bersih ke discard pile (tanpa membocorkan properti internal).
+    const cardOnPile = { color: cardToPlay.color, type: cardToPlay.type };
+    if (isWild) cardOnPile.chosenColor = chosenColor;
+
+    gameState.discardPile.push(cardOnPile);
+    gameState.lastPlayedCard = cardOnPile;
+    gameState.currentColor = isWild ? chosenColor : cardToPlay.color;
+
+    applyCardEffect(gameState, cardOnPile);
 
     return gameState;
 }
 
 /**
- * Pemain mengambil kartu dari dek.
- * @param {object} gameState - State game saat ini.
- * @param {number} playerIndex - Indeks pemain yang mengambil kartu.
- * @param {boolean} [endTurn=false] - Apakah giliran pemain berakhir setelah mengambil kartu.
- * @returns {object|null} State game yang diperbarui, atau null jika dek kosong.
+ * Pemain mengambil satu kartu dari dek.
+ * @param {object} gameState
+ * @param {number} playerIndex
+ * @param {boolean} [endTurn=false]
+ * @returns {object|null}
  */
-function playerDrawsCard(gameState, playerIndex, endTurn = false) {
+export function playerDrawsCard(gameState, playerIndex, endTurn = false) {
+    if (!gameState || gameState.winner !== null) return null;
+
+    const playerHand = gameState.players[playerIndex];
+    if (!playerHand) return null;
+
+    // Kocok ulang discard pile bila dek habis.
     if (gameState.deck.length === 0) {
-        // Jika dek kosong, kocok ulang discard pile dan jadikan dek baru (kecuali kartu teratas)
-        if (gameState.discardPile.length > 1) {
-            const topCard = gameState.discardPile.pop(); // Simpan kartu teratas
-            gameState.deck = shuffleDeck(gameState.discardPile);
-            gameState.discardPile = [topCard]; // Buat discard pile baru dengan kartu teratas
-            console.log("Dek dikocok ulang dari discard pile.");
-            gameState.messages.push({ type: 'info', text: 'Dek dikocok ulang dari tumpukan buangan.' });
-        } else {
-            console.warn("Dek kosong dan tidak ada kartu untuk dikocok ulang dari discard pile.");
-            return null; // Tidak bisa mengambil kartu
+        if (gameState.discardPile.length <= 1) {
+            gameState.messages.push({
+                type: 'warning',
+                text: 'Tidak ada kartu tersisa untuk diambil.'
+            });
+            return null;
         }
+
+        const topCard = gameState.discardPile.pop();
+        const recyclable = gameState.discardPile.map((c) =>
+            c.chosenColor ? { color: c.color, type: c.type } : { color: c.color, type: c.type }
+        );
+        gameState.deck = shuffleDeck(recyclable);
+        gameState.discardPile = [topCard];
+        gameState.messages.push({ type: 'info', text: 'Dek habis — tumpukan buangan dikocok ulang.' });
     }
 
     const drawnCard = gameState.deck.pop();
-    gameState.players[playerIndex].push(drawnCard);
-    gameState.lastDrawnCard = drawnCard; // Untuk informasi di klien
-    console.log(`Pemain ${playerIndex} mengambil kartu: ${drawnCard.color} ${drawnCard.type}`);
-    gameState.messages.push({ type: 'info', text: `Pemain ${playerIndex + 1} mengambil kartu.` });
+    playerHand.push(drawnCard);
+    gameState.lastDrawnCard = drawnCard;
+
+    gameState.messages.push({ type: 'info', text: `Pemain ${playerIndex + 1} mengambil 1 kartu.` });
 
     if (endTurn) {
         moveToNextPlayer(gameState);
@@ -225,98 +237,94 @@ function playerDrawsCard(gameState, playerIndex, endTurn = false) {
     return gameState;
 }
 
-
 /**
- * Menerapkan efek kartu aksi.
- * @param {object} gameState - State game saat ini.
- * @param {object} card - Kartu yang baru saja dimainkan.
+ * Menerapkan efek kartu aksi dan memindahkan giliran.
+ * @param {object} gameState
+ * @param {{color:string,type:string}} card
  */
-function applyCardEffect(gameState, card) {
+export function applyCardEffect(gameState, card) {
     switch (card.type) {
         case 'SKIP':
-            console.log('Efek SKIP: Melewatkan giliran pemain berikutnya.');
-            moveToNextPlayer(gameState); // Pindah ke pemain yang dilewati
-            moveToNextPlayer(gameState); // Pindah ke pemain setelah yang dilewati
-            gameState.messages.push({ type: 'info', text: `Giliran dilewati untuk pemain berikutnya.` });
+            moveToNextPlayer(gameState); // lawan berikutnya
+            moveToNextPlayer(gameState); // lewati dia
+            gameState.messages.push({ type: 'info', text: 'Giliran pemain berikutnya dilewati.' });
             break;
+
         case 'REVERSE':
-            console.log('Efek REVERSE: Mengubah arah permainan.');
-            gameState.direction *= -1; // Balik arah
-            // Jika hanya 2 pemain, Reverse bekerja seperti Skip
+            gameState.direction *= -1;
             if (gameState.players.length === 2) {
-                moveToNextPlayer(gameState); // Maju sekali untuk melewatkan pemain berikutnya
-                moveToNextPlayer(gameState); // Maju lagi untuk ke pemain setelah yang dilewatkan
-                gameState.messages.push({ type: 'info', text: `Arah berubah, dan giliran dilewati.` });
+                // Dengan 2 pemain, REVERSE berlaku seperti SKIP.
+                moveToNextPlayer(gameState);
+                moveToNextPlayer(gameState);
+                gameState.messages.push({ type: 'info', text: 'Arah berubah — giliran lawan dilewati.' });
             } else {
-                moveToNextPlayer(gameState); // Pindah giliran secara normal setelah arah berubah
-                gameState.messages.push({ type: 'info', text: `Arah permainan berubah.` });
+                moveToNextPlayer(gameState);
+                gameState.messages.push({ type: 'info', text: 'Arah permainan berbalik.' });
             }
             break;
+
         case 'DRAW_TWO':
-            console.log('Efek DRAW_TWO: Pemain berikutnya mengambil 2 kartu.');
             gameState.pendingDraw += 2;
-            moveToNextPlayer(gameState); // Pindah ke pemain yang terkena efek
-            handlePendingDraw(gameState); // Segera terapkan efek dan lewati giliran mereka
-            gameState.messages.push({ type: 'info', text: `Pemain berikutnya mengambil 2 kartu.` });
+            moveToNextPlayer(gameState);
+            handlePendingDraw(gameState);
             break;
+
         case 'WILD_DRAW_FOUR':
-            console.log('Efek WILD_DRAW_FOUR: Pemain berikutnya mengambil 4 kartu.');
             gameState.pendingDraw += 4;
-            moveToNextPlayer(gameState); // Pindah ke pemain yang terkena efek
-            handlePendingDraw(gameState); // Segera terapkan efek dan lewati giliran mereka
-            gameState.messages.push({ type: 'info', text: `Pemain berikutnya mengambil 4 kartu.` });
+            moveToNextPlayer(gameState);
+            handlePendingDraw(gameState);
             break;
-        default: // Kartu angka dan WILD (jika bukan Draw Four)
-            moveToNextPlayer(gameState); // Pindah giliran secara normal
+
+        default: // kartu angka & WILD biasa
+            moveToNextPlayer(gameState);
             break;
     }
+    return gameState;
 }
 
 /**
- * Menangani kartu yang harus diambil (dari DRAW_TWO atau WILD_DRAW_FOUR).
- * @param {object} gameState - State game saat ini.
+ * Pemain yang kena efek DRAW_TWO / WILD_DRAW_FOUR mengambil kartu dan kehilangan giliran.
+ * @param {object} gameState
+ * @returns {object} gameState
  */
-function handlePendingDraw(gameState) {
-    if (gameState.pendingDraw > 0) {
-        const playerToDraw = gameState.currentPlayerIndex;
-        console.log(`Pemain ${playerToDraw} harus mengambil ${gameState.pendingDraw} kartu.`);
-        for (let i = 0; i < gameState.pendingDraw; i++) {
-            playerDrawsCard(gameState, playerToDraw, false); // Ambil kartu, jangan akhiri giliran
-        }
-        gameState.pendingDraw = 0; // Reset pending draw
-        // Setelah mengambil kartu, giliran pemain yang terkena efek draw dilewati
-        moveToNextPlayer(gameState);
+export function handlePendingDraw(gameState) {
+    if (!gameState || !gameState.pendingDraw) return gameState;
+
+    const victimIndex = gameState.currentPlayerIndex;
+    const amount = gameState.pendingDraw;
+    gameState.pendingDraw = 0;
+
+    for (let i = 0; i < amount; i++) {
+        playerDrawsCard(gameState, victimIndex, false);
     }
+
+    gameState.messages.push({
+        type: 'info',
+        text: `Pemain ${victimIndex + 1} mengambil ${amount} kartu dan kehilangan gilirannya.`
+    });
+
+    moveToNextPlayer(gameState);
+    return gameState;
 }
 
 /**
- * Memindahkan giliran ke pemain berikutnya berdasarkan arah.
- * @param {object} gameState - State game saat ini.
+ * Pindah giliran sesuai arah permainan.
+ * @param {object} gameState
  */
-function moveToNextPlayer(gameState) {
+export function moveToNextPlayer(gameState) {
+    const total = gameState.players.length;
+    if (total === 0) return;
+
     gameState.currentPlayerIndex += gameState.direction;
-
-    // Lingkari indeks pemain agar tetap dalam batas array
-    if (gameState.currentPlayerIndex >= gameState.players.length) {
-        gameState.currentPlayerIndex = 0;
-    } else if (gameState.currentPlayerIndex < 0) {
-        gameState.currentPlayerIndex = gameState.players.length - 1;
-    }
-    console.log(`Giliran sekarang pemain: ${gameState.currentPlayerIndex}`);
+    gameState.currentPlayerIndex = ((gameState.currentPlayerIndex % total) + total) % total;
 }
 
-// Ekspor fungsi-fungsi agar dapat digunakan di modul lain
-export {
-    initializeGame,
-    createDeck,
-    shuffleDeck,
-    isValidPlay,
-    playCard,
-    playerDrawsCard,
-    applyCardEffect,
-    moveToNextPlayer,
-    UNO_COLORS,
-    UNO_NUMBERS,
-    UNO_ACTION_CARDS,
-    UNO_WILD_CARDS
-};
+/**
+ * Apakah pemain sudah menang (tangan kosong)?
+ * @param {object} gameState
+ * @param {number} playerIndex
+ * @returns {boolean}
+ */
+export function hasWon(gameState, playerIndex) {
+    return Boolean(gameState && gameState.players[playerIndex] && gameState.players[playerIndex].length === 0);
+}

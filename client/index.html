@@ -10,31 +10,70 @@
     <div class="game-container">
         <h1>Uno Online</h1>
 
-        <div class="room-controls">
+        <!-- Layar lobby: buat / gabung room -->
+        <div class="room-controls" id="roomControls">
             <h2>Bergabung atau Buat Room</h2>
             <div class="room-input-group">
-                <input type="text" id="roomCodeInput" placeholder="Masukkan kode room">
+                <input type="text" id="roomCodeInput" placeholder="Kode room (5 karakter)"
+                       maxlength="5" autocomplete="off" spellcheck="false">
                 <button id="joinRoomBtn">Gabung Room</button>
             </div>
             <button id="createRoomBtn">Buat Room Baru</button>
-            <p id="roomStatusMessage" class="message-item info"></p>
-            <div id="playerList" class="message-item info"></div> </div>
-
-        <div class="discard-pile">
-            <div class="card back"></div>
-            <div class="card-display" id="discardPileTopCard"></div>
         </div>
 
-        <div class="player-area" id="playerHand">
-            <h2>Tangan Pemain Anda:</h2>
-            <div class="hand-cards"></div>
-            <button id="drawCardBtn">Ambil Kartu</button>
+        <!-- Bar room: terlihat setelah masuk room -->
+        <div class="room-bar" id="roomBar" hidden>
+            <span class="room-code" id="roomCodeLabel">Room: -----</span>
+            <div id="playerList" class="player-list">Menunggu pemain...</div>
+            <div class="room-actions">
+                <button id="startGameBtn" hidden>Mulai Game</button>
+                <button id="leaveRoomBtn" class="secondary">Keluar Room</button>
+            </div>
+        </div>
+
+        <p id="roomStatusMessage" class="message-item info"></p>
+
+        <!-- Papan permainan -->
+        <div class="board" id="board" hidden>
+            <div class="board-top">
+                <span id="turnIndicator" class="turn-indicator">Menunggu...</span>
+                <span id="activeColor" class="active-color"></span>
+                <span id="deckInfo" class="deck-info"></span>
+            </div>
+
+            <div id="opponents" class="opponents"></div>
+
+            <div class="discard-pile">
+                <!-- Ganti ke assets/cards/BACK.png untuk punggung kartu versi flat (hasil generate_cards.py) -->
+                <img id="drawPile" class="card-back-img" src="assets/cards/BACK_ornate.jpg"
+                     alt="Tumpukan kartu" title="Klik untuk ambil kartu" draggable="false">
+                <div class="card-display" id="discardPileTopCard"></div>
+            </div>
+
+            <div class="player-area" id="playerHand">
+                <h2>Tangan Pemain Anda:</h2>
+                <div class="hand-cards"></div>
+                <button id="drawCardBtn">Ambil Kartu</button>
+            </div>
         </div>
 
         <div class="messages" id="gameMessages"></div>
     </div>
 
-    <script src="../shared/uno-logic.js"></script>
+    <!-- Modal pemilih warna untuk kartu Wild -->
+    <div class="modal-overlay" id="colorPicker" hidden>
+        <div class="modal">
+            <h3>Pilih warna</h3>
+            <div class="color-choices">
+                <button class="color-choice RED" data-color="RED">Merah</button>
+                <button class="color-choice YELLOW" data-color="YELLOW">Kuning</button>
+                <button class="color-choice GREEN" data-color="GREEN">Hijau</button>
+                <button class="color-choice BLUE" data-color="BLUE">Biru</button>
+            </div>
+            <button id="cancelColorBtn" class="secondary">Batal</button>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>

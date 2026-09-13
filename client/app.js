@@ -1,350 +1,447 @@
 // client/app.js
+// Klien Uno: hanya menampilkan state dan mengirim niat ke server.
+// Seluruh validasi tetap dilakukan server.
 
-// Dapatkan elemen-elemen HTML yang akan kita perbarui
-const discardPileTopCardEl = document.getElementById('discardPileTopCard');
-const playerHandEl = document.querySelector('.hand-cards');
-const drawCardBtn = document.getElementById('drawCardBtn');
-const gameMessagesEl = document.getElementById('gameMessages');
+'use strict';
 
-// Elemen baru untuk kontrol room
-const roomCodeInput = document.getElementById('roomCodeInput');
-const joinRoomBtn = document.getElementById('joinRoomBtn');
-const createRoomBtn = document.getElementById('createRoomBtn');
-const roomStatusMessageEl = document.getElementById('roomStatusMessage');
-const roomControlsEl = document.querySelector('.room-controls'); // Untuk menyembunyikan/menampilkan
-const playerListEl = document.getElementById('playerList'); // Untuk menampilkan daftar pemain
+// --- Referensi elemen -------------------------------------------------------
+const el = {
+    roomControls: document.getElementById('roomControls'),
+    roomBar: document.getElementById('roomBar'),
+    roomCodeLabel: document.getElementById('roomCodeLabel'),
+    roomCodeInput: document.getElementById('roomCodeInput'),
+    joinRoomBtn: document.getElementById('joinRoomBtn'),
+    createRoomBtn: document.getElementById('createRoomBtn'),
+    startGameBtn: document.getElementById('startGameBtn'),
+    leaveRoomBtn: document.getElementById('leaveRoomBtn'),
+    roomStatusMessage: document.getElementById('roomStatusMessage'),
+    playerList: document.getElementById('playerList'),
 
-// --- Variabel Global Game State (akan dikelola oleh server) ---
-let currentGameState;
-let localPlayerId = 'player_' + Math.random().toString(36).substring(2, 9); // ID unik untuk pemain lokal
-let currentRoomCode = null; // Kode room tempat pemain berada
-let socket; // Variabel untuk menyimpan koneksi WebSocket
+    board: document.getElementById('board'),
+    turnIndicator: document.getElementById('turnIndicator'),
+    activeColor: document.getElementById('activeColor'),
+    deckInfo: document.getElementById('deckInfo'),
+    opponents: document.getElementById('opponents'),
+    discardPileTopCard: document.getElementById('discardPileTopCard'),
+    drawPile: document.getElementById('drawPile'),
+    playerHand: document.querySelector('.hand-cards'),
+    drawCardBtn: document.getElementById('drawCardBtn'),
 
-// --- Fungsi untuk Merender Kartu ---
-/**
- * Membuat elemen HTML untuk satu kartu Uno.
- * @param {object} card - Objek kartu { color, type }.
- * @param {boolean} isPlayable - True jika kartu bisa dimainkan (untuk visualisasi).
- * @returns {HTMLElement} Elemen div yang merepresentasikan kartu.
- */
-function createCardElement(card, isPlayable = false) {
-    const cardEl = document.createElement('div');
-    cardEl.classList.add('card');
-    cardEl.classList.add(card.color || 'WILD'); // Tambahkan kelas warna (atau WILD)
+    gameMessages: document.getElementById('gameMessages'),
 
-    // Tambahkan simbol di tengah
-    const centerSymbol = document.createElement('span');
-    centerSymbol.classList.add('card-center-symbol');
-    centerSymbol.textContent = getCardDisplayValue(card.type);
-    cardEl.appendChild(centerSymbol);
+    colorPicker: document.getElementById('colorPicker'),
+    cancelColorBtn: document.getElementById('cancelColorBtn')
+};
 
-    // Tambahkan simbol di pojok
-    const cornerSymbolTopLeft = document.createElement('span');
-    cornerSymbolTopLeft.classList.add('card-corner-symbol', 'corner-top-left');
-    cornerSymbolTopLeft.textContent = getCardDisplayValue(card.type);
-    cardEl.appendChild(cornerSymbolTopLeft);
+// --- State klien ------------------------------------------------------------
+const app = {
+    socket: null,
+    localPlayerId: 'player_' + Math.random().toString(36).slice(2, 9),
+    roomCode: null,
+    players: [],        // [{ id, count, isYou }]
+    game: null,         // state game terakhir dari server
+    gameRunning: false,
+    isMyTurn: false
+};
 
-    const cornerSymbolBottomRight = document.createElement('span');
-    cornerSymbolBottomRight.classList.add('card-corner-symbol', 'corner-bottom-right');
-    cornerSymbolBottomRight.textContent = getCardDisplayValue(card.type);
-    cardEl.appendChild(cornerSymbolBottomRight);
+// --- Util -------------------------------------------------------------------
 
-    if (isPlayable) {
-        cardEl.classList.add('playable'); // Bisa tambahkan gaya highlight jika bisa dimainkan
-        cardEl.onclick = () => playCardHandler(card, cardEl); // Tambahkan handler klik
+function send(payload) {
+    if (app.socket && app.socket.readyState === WebSocket.OPEN) {
+        app.socket.send(JSON.stringify(payload));
+        return true;
     }
-    
-    // Simpan data kartu di elemen untuk memudahkan akses nanti
+    showMessage('Tidak terhubung ke server.', 'error');
+    return false;
+}
+
+function showMessage(text, type = 'info') {
+    const msgEl = document.createElement('div');
+    msgEl.classList.add('message-item', type);
+    msgEl.textContent = text;
+    el.gameMessages.prepend(msgEl);
+    while (el.gameMessages.children.length > 6) {
+        el.gameMessages.removeChild(el.gameMessages.lastChild);
+    }
+}
+
+function setRoomStatus(text, type = 'info') {
+    el.roomStatusMessage.textContent = text;
+    el.roomStatusMessage.className = 'message-item ' + type;
+}
+
+function getCardDisplayValue(type) {
+    switch (type) {
+        case 'SKIP': return '🚫';
+        case 'REVERSE': return '↔';
+        case 'DRAW_TWO': return '+2';
+        case 'WILD': return '🌈';
+        case 'WILD_DRAW_FOUR': return '+4';
+        default: return String(type);
+    }
+}
+
+function colorLabel(color) {
+    return { RED: 'Merah', YELLOW: 'Kuning', GREEN: 'Hijau', BLUE: 'Biru' }[color] || color || '-';
+}
+
+/** Salinan logika validasi untuk highlight saja (server tetap penentu akhir). */
+function isCardPlayable(card, topCard, currentColor) {
+    if (!topCard) return true;
+    if (card.color === 'WILD') return true;
+    if (card.color === currentColor) return true;
+    if (card.type === topCard.type) return true;
+    return false;
+}
+
+// --- Render kartu -----------------------------------------------------------
+
+/** Nama file gambar kartu. Wild tidak memakai prefix warna. */
+function cardImageName(card) {
+    return card.color === 'WILD' ? `${card.type}.png` : `${card.color}_${card.type}.png`;
+}
+
+function createCardElement(card, { playable = false, small = false, onClick = null } = {}) {
+    const cardEl = document.createElement('div');
+    cardEl.classList.add('card', 'image-card');
+    if (small) cardEl.classList.add('small');
+    if (card.color === 'WILD' && card.chosenColor) cardEl.classList.add('chosen-' + card.chosenColor);
+
+    const img = document.createElement('img');
+    img.src = `assets/cards/${cardImageName(card)}`;
+    img.alt = `${card.color} ${getCardDisplayValue(card.type)}`;
+    img.draggable = false;
+    img.decoding = 'async';
+    cardEl.appendChild(img);
+
     cardEl.dataset.color = card.color;
     cardEl.dataset.type = card.type;
+
+    if (playable && onClick) {
+        cardEl.classList.add('playable');
+        cardEl.addEventListener('click', onClick);
+    } else {
+        cardEl.classList.add('dim');
+    }
 
     return cardEl;
 }
 
-/**
- * Mengubah tipe kartu menjadi teks yang mudah dibaca.
- * @param {string|number} type - Tipe kartu.
- * @returns {string} Teks yang akan ditampilkan di kartu.
- */
-function getCardDisplayValue(type) {
-    switch (type) {
-        case 'SKIP': return '🚫'; // Simbol skip
-        case 'REVERSE': return '↔️'; // Simbol reverse
-        case 'DRAW_TWO': return '+2';
-        case 'WILD': return '🌈'; // Simbol Wild
-        case 'WILD_DRAW_FOUR': return '+4';
-        default: return type.toString(); // Angka
-    }
-}
+// --- Render game ------------------------------------------------------------
 
-// --- Fungsi untuk Memperbarui Tampilan Game ---
-function renderGame(gameState) {
-    // Sembunyikan kontrol room jika room sudah terhubung
-    if (currentRoomCode) {
-        roomControlsEl.style.display = 'none';
-        discardPileTopCardEl.parentElement.style.display = 'flex'; // Tampilkan discard pile
-        playerHandEl.parentElement.style.display = 'block'; // Tampilkan player hand
-        drawCardBtn.style.display = 'block'; // Tampilkan tombol ambil kartu
+function renderGame() {
+    const inRoom = Boolean(app.roomCode);
+    el.roomControls.hidden = inRoom;
+    el.roomBar.hidden = !inRoom;
+    el.board.hidden = !inRoom;
+
+    if (!inRoom) return;
+
+    el.roomCodeLabel.textContent = `Room: ${app.roomCode}`;
+    el.startGameBtn.hidden = app.gameRunning;
+    el.startGameBtn.disabled = app.players.length < 2;
+
+    const game = app.game;
+    if (!game) {
+        el.turnIndicator.textContent = 'Menunggu game dimulai...';
+        el.activeColor.textContent = '';
+        el.deckInfo.textContent = '';
+        el.opponents.innerHTML = '';
+        el.playerHand.innerHTML = '';
+        el.discardPileTopCard.innerHTML = '';
+        el.drawCardBtn.disabled = true;
+        return;
+    }
+
+    const topCard = game.discardPile && game.discardPile.length
+        ? game.discardPile[game.discardPile.length - 1]
+        : null;
+
+    // Discard pile
+    el.discardPileTopCard.innerHTML = '';
+    if (topCard) {
+        el.discardPileTopCard.appendChild(createCardElement(topCard, { small: true }));
     } else {
-        roomControlsEl.style.display = 'block';
-        discardPileTopCardEl.parentElement.style.display = 'none'; // Sembunyikan discard pile
-        playerHandEl.parentElement.style.display = 'none'; // Sembunyikan player hand
-        drawCardBtn.style.display = 'none'; // Sembunyikan tombol ambil kartu
+        el.discardPileTopCard.innerHTML = '<div class="card small empty"></div>';
     }
 
-    // Render kartu teratas di discard pile
-    if (gameState && gameState.discardPile && gameState.discardPile.length > 0) {
-        discardPileTopCardEl.innerHTML = ''; // Bersihkan dulu
-        const topCard = gameState.discardPile[gameState.discardPile.length - 1];
-        discardPileTopCardEl.appendChild(createCardElement(topCard));
-    } else if (gameState && gameState.discardPile) { // Jika discard pile kosong tapi game state ada
-        discardPileTopCardEl.innerHTML = '<div class="card empty"></div>'; // Placeholder
-    }
+    // Papan informasi
+    const isMyTurn = game.currentPlayerId === app.localPlayerId;
+    app.isMyTurn = isMyTurn;
+    el.turnIndicator.textContent = game.winner !== null
+        ? 'Game selesai'
+        : (isMyTurn ? '⭐ GILIRAN KAMU' : 'Menunggu lawan...');
+    el.turnIndicator.classList.toggle('mine', isMyTurn);
 
+    el.activeColor.textContent = 'Warna aktif: ' + colorLabel(game.currentColor);
+    el.activeColor.dataset.color = game.currentColor || '';
+    el.deckInfo.textContent = `Dek: ${game.deckCount} kartu` + (game.direction === -1 ? ' • arah terbalik' : '');
 
-    // Render kartu di tangan pemain lokal
-    playerHandEl.innerHTML = ''; // Bersihkan dulu
-    if (gameState && gameState.playerHand && gameState.playerHand.length > 0) {
-        const topCardOnDiscard = gameState.discardPile[gameState.discardPile.length - 1];
-        // Asumsi `isValidPlay` diimport dari `uno-logic.js` dan tersedia di klien
-        // Namun, kita tidak akan melakukan validasi play di klien untuk menghindari cheating.
-        // Server yang akan memvalidasi.
-        gameState.playerHand.forEach((card, index) => {
-            // Untuk visualisasi, kita bisa mengasumsikan semua kartu bisa diklik.
-            // Validasi sebenarnya akan dilakukan di server.
-            const cardEl = createCardElement(card, true); // Set isPlayable true agar bisa diklik
-            cardEl.dataset.cardIndexInHand = index; // Simpan indeks kartu di tangan
-            playerHandEl.appendChild(cardEl);
+    // Daftar lawan
+    el.opponents.innerHTML = '';
+    (game.players || []).forEach((p) => {
+        if (p.isYou) return;
+        const chip = document.createElement('div');
+        chip.classList.add('opponent');
+        if (p.id === game.currentPlayerId) chip.classList.add('active');
+        chip.textContent = `${(p.id || '?').substring(0, 7)}… — ${p.count} kartu`;
+        el.opponents.appendChild(chip);
+    });
+
+    // Tangan sendiri
+    el.playerHand.innerHTML = '';
+    (game.playerHand || []).forEach((card, index) => {
+        const playable = game.winner === null && isMyTurn && isCardPlayable(card, topCard, game.currentColor);
+        const cardEl = createCardElement(card, {
+            playable,
+            onClick: () => handlePlayCard(card)
         });
-    } else if (gameState && gameState.playerHand) {
-        showMessage("Anda belum punya kartu di tangan.", 'info');
-    }
+        cardEl.dataset.cardIndexInHand = index;
+        el.playerHand.appendChild(cardEl);
+    });
 
-    // Perbarui pesan game
-    if (gameState && gameState.currentPlayerIndex !== undefined) {
-         showMessage(`Giliran Pemain ${gameState.currentPlayerIndex + 1}`, 'info');
-    }
-    if (gameState && gameState.currentColor) {
-        showMessage(`Warna aktif: ${gameState.currentColor}`, 'info');
-    }
+    el.drawCardBtn.disabled = !(isMyTurn && game.winner === null);
 }
 
-/**
- * Menampilkan pesan di area pesan game.
- * @param {string} message - Teks pesan.
- * @param {string} type - Tipe pesan (info, success, warning, error).
- */
-function showMessage(message, type = 'info') {
-    const msgEl = document.createElement('div');
-    msgEl.classList.add('message-item', type);
-    msgEl.textContent = message;
-    gameMessagesEl.prepend(msgEl); // Tambahkan pesan baru di paling atas
-    // Batasi jumlah pesan
-    if (gameMessagesEl.children.length > 5) {
-        gameMessagesEl.removeChild(gameMessagesEl.lastChild);
+function renderPlayers() {
+    if (!app.players.length) {
+        el.playerList.textContent = 'Menunggu pemain...';
+        return;
     }
+    el.playerList.textContent = 'Pemain di room: ' + app.players
+        .map((id) => (id === app.localPlayerId ? 'Anda' : id.substring(0, 7) + '…'))
+        .join(', ');
 }
 
-/**
- * Menampilkan pesan status room.
- * @param {string} message - Teks pesan.
- * @param {string} type - Tipe pesan (info, success, warning, error).
- */
-function showRoomStatus(message, type = 'info') {
-    roomStatusMessageEl.textContent = message;
-    roomStatusMessageEl.className = 'message-item ' + type;
+function resetToLobby(message) {
+    app.roomCode = null;
+    app.players = [];
+    app.game = null;
+    app.gameRunning = false;
+    app.isMyTurn = false;
+    el.startGameBtn.hidden = true;
+    renderGame();
+    renderPlayers();
+    if (message) setRoomStatus(message, 'info');
 }
 
-/**
- * Menampilkan daftar pemain di room.
- * @param {Array<string>} playerList - Array ID pemain.
- */
-function displayPlayerList(playerList) {
-    if (playerList && playerList.length > 0) {
-        playerListEl.textContent = `Pemain di room: ${playerList.map(id => id === localPlayerId ? 'Anda' : id.substring(0, 7) + '...').join(', ')}`;
-    } else {
-        playerListEl.textContent = 'Menunggu pemain...';
+// --- Aksi pemain ------------------------------------------------------------
+
+function pickColor() {
+    return new Promise((resolve) => {
+        el.colorPicker.hidden = false;
+        const buttons = Array.from(el.colorPicker.querySelectorAll('[data-color]'));
+
+        const cleanup = () => {
+            el.colorPicker.hidden = true;
+            buttons.forEach((b) => b.removeEventListener('click', onClick));
+            el.cancelColorBtn.removeEventListener('click', onCancel);
+        };
+        const onClick = (e) => {
+            const value = e.currentTarget.dataset.color;
+            cleanup();
+            resolve(value || null);
+        };
+        const onCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+
+        buttons.forEach((b) => b.addEventListener('click', onClick));
+        el.cancelColorBtn.addEventListener('click', onCancel);
+    });
+}
+
+async function handlePlayCard(card) {
+    if (!app.isMyTurn) {
+        showMessage('Belum giliranmu.', 'warning');
+        return;
     }
+
+    let chosenColor = null;
+    if (card.color === 'WILD') {
+        chosenColor = await pickColor();
+        if (!chosenColor) {
+            showMessage('Pemilihan warna dibatalkan.', 'warning');
+            return;
+        }
+    }
+
+    send({
+        type: 'PLAY_CARD',
+        card: { color: card.color, type: card.type },
+        chosenColor
+    });
 }
 
-// --- Handler Aksi Pemain ---
-drawCardBtn.addEventListener('click', () => {
-    if (socket.readyState === WebSocket.OPEN && currentRoomCode) {
-        socket.send(JSON.stringify({
-            type: 'DRAW_CARD',
-            roomCode: currentRoomCode,
-            playerId: localPlayerId
-        }));
-        showMessage("Mengirim permintaan ambil kartu ke server...", 'info');
-    } else {
-        showMessage("Tidak terhubung ke room atau server.", 'error');
+function drawCard() {
+    if (!app.isMyTurn) {
+        showMessage('Belum giliranmu.', 'warning');
+        return;
+    }
+    send({ type: 'DRAW_CARD' });
+}
+
+// Satu listener saja untuk tombol ambil kartu (versi lama mendaftarkannya dua kali).
+el.drawCardBtn.addEventListener('click', drawCard);
+el.drawPile.addEventListener('click', drawCard);
+
+el.createRoomBtn.addEventListener('click', () => {
+    if (send({ type: 'CREATE_ROOM', playerId: app.localPlayerId })) {
+        setRoomStatus('Membuat room...', 'info');
     }
 });
 
-// Handler untuk memainkan kartu
-function playCardHandler(card, cardEl) {
-    if (socket.readyState === WebSocket.OPEN && currentRoomCode) {
-        // Untuk kartu WILD, minta pemain memilih warna
-        if (card.type === 'WILD' || card.type === 'WILD_DRAW_FOUR') {
-            const chosenColor = prompt("Pilih warna (RED, YELLOW, GREEN, BLUE):");
-            if (!chosenColor || !['RED', 'YELLOW', 'GREEN', 'BLUE'].includes(chosenColor.toUpperCase())) {
-                showMessage("Pilihan warna tidak valid atau dibatalkan.", 'warning');
-                return;
-            }
-            card.chosenColor = chosenColor.toUpperCase(); // Tambahkan warna pilihan ke objek kartu
-        }
-
-        socket.send(JSON.stringify({
-            type: 'PLAY_CARD',
-            roomCode: currentRoomCode,
-            playerId: localPlayerId,
-            card: card // Kirim objek kartu lengkap
-        }));
-        showMessage(`Mencoba memainkan kartu ${card.color || 'WILD'} ${card.type}...`, 'info');
-    } else {
-        showMessage("Tidak terhubung ke room atau server untuk memainkan kartu.", 'error');
+el.joinRoomBtn.addEventListener('click', () => {
+    const roomCode = el.roomCodeInput.value.trim().toUpperCase();
+    if (!roomCode) {
+        setRoomStatus('Masukkan kode room terlebih dahulu.', 'warning');
+        return;
     }
-}
+    if (send({ type: 'JOIN_ROOM', roomCode, playerId: app.localPlayerId })) {
+        setRoomStatus('Bergabung ke room...', 'info');
+    }
+});
 
-// --- Inisialisasi WebSocket dan Event Handlers ---
-document.addEventListener('DOMContentLoaded', () => {
-    // Inisialisasi tampilan awal, sembunyikan game sampai bergabung ke room
-    renderGame(null); // Render dengan state kosong untuk menyembunyikan area game
-    displayPlayerList(null); // Sembunyikan daftar pemain di awal
+el.roomCodeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') el.joinRoomBtn.click();
+});
 
-    // Asumsi URL server Cloudflare Function Anda adalah sama dengan origin Anda
-    // atau URL yang Anda deploy. Contoh: ws://localhost:8787/websocket (untuk lokal)
-    // atau wss://your-worker-name.your-username.workers.dev/websocket (untuk produksi)
-    // Gunakan window.location.host untuk port yang benar saat development lokal
-    const serverUrl = `ws://${window.location.host}/websocket`;
-    // Untuk produksi dengan https: const serverUrl = `wss://${window.location.host}/websocket`;
-    
-    // Inisialisasi koneksi WebSocket
-    socket = new WebSocket(serverUrl);
+el.startGameBtn.addEventListener('click', () => {
+    if (send({ type: 'START_GAME' })) {
+        setRoomStatus('Memulai game...', 'info');
+    }
+});
 
-    socket.onopen = (event) => {
-        console.log('Koneksi WebSocket berhasil dibuka:', event);
-        showMessage('Terhubung ke server game!', 'success');
-        showRoomStatus('Silakan buat atau gabung room.', 'info');
-    };
+el.leaveRoomBtn.addEventListener('click', () => {
+    send({ type: 'LEAVE_ROOM' });
+    resetToLobby('Anda keluar dari room.');
+});
 
-    socket.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        console.log('Pesan diterima dari server:', message);
+// --- WebSocket --------------------------------------------------------------
+
+function connect() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const serverUrl = `${protocol}//${window.location.host}/websocket`;
+
+    app.socket = new WebSocket(serverUrl);
+
+    app.socket.addEventListener('open', () => {
+        setRoomStatus('Terhubung ke server. Silakan buat atau gabung room.', 'success');
+    });
+
+    app.socket.addEventListener('message', (event) => {
+        let message;
+        try {
+            message = JSON.parse(event.data);
+        } catch {
+            console.warn('Pesan bukan JSON:', event.data);
+            return;
+        }
 
         switch (message.type) {
             case 'ROOM_CREATED':
-                currentRoomCode = message.roomCode;
-                showMessage(`Room berhasil dibuat! Kode: ${currentRoomCode}`, 'success');
-                showRoomStatus(`Anda di room: ${currentRoomCode}. Menunggu pemain lain...`, 'info');
-                displayPlayerList([message.playerId]); // Tampilkan diri sendiri
+                app.roomCode = message.roomCode;
+                app.players = message.playerList || [message.playerId];
+                app.game = null;
+                app.gameRunning = false;
+                showMessage(`Room dibuat! Kode: ${message.roomCode}`, 'success');
+                setRoomStatus(`Anda di room ${message.roomCode}. Bagikan kode ini ke temanmu, lalu tekan "Mulai Game".`, 'info');
+                renderPlayers();
+                renderGame();
                 break;
+
             case 'ROOM_JOINED':
-                currentRoomCode = message.roomCode;
-                showMessage(`Berhasil bergabung ke room: ${currentRoomCode}. Jumlah pemain: ${message.playerCount}`, 'success');
-                showRoomStatus(`Anda di room: ${currentRoomCode}. Menunggu game dimulai...`, 'info');
-                displayPlayerList(message.playerList);
+                app.roomCode = message.roomCode;
+                app.players = message.playerList || [];
+                app.game = null;
+                app.gameRunning = false;
+                showMessage(`Bergabung ke room ${message.roomCode}.`, 'success');
+                setRoomStatus(`Anda di room ${message.roomCode}. Menunggu host memulai game...`, 'info');
+                renderPlayers();
+                renderGame();
                 break;
+
             case 'PLAYER_JOINED':
-                showMessage(`Pemain ${message.playerId} bergabung! Total pemain: ${message.playerCount}`, 'info');
-                showRoomStatus(`Pemain baru bergabung. Total pemain: ${message.playerCount}`, 'info');
-                displayPlayerList(message.playerList);
+                app.players = message.playerList || app.players;
+                showMessage(`Pemain ${message.playerId.substring(0, 7)}… bergabung (${message.playerCount} pemain).`, 'info');
+                setRoomStatus(`Total ${message.playerCount} pemain di room.`, 'info');
+                renderPlayers();
+                renderGame();
                 break;
+
             case 'PLAYER_LEFT':
-                showMessage(`Pemain ${message.playerId} meninggalkan room. Total pemain: ${message.playerCount}`, 'warning');
-                showRoomStatus(`Pemain meninggalkan room. Total pemain: ${message.playerCount}`, 'warning');
-                displayPlayerList(message.playerList);
-                if (message.playerCount === 0) { // Jika room kosong setelah pemain pergi
-                    showMessage("Room kosong, kembali ke layar utama.", 'info');
-                    currentRoomCode = null;
-                    renderGame(null); // Kembali ke tampilan kontrol room
-                    displayPlayerList(null);
+                app.players = message.playerList || [];
+                showMessage(`Pemain ${message.playerId.substring(0, 7)}… keluar (${message.playerCount} pemain).`, 'warning');
+                if (message.playerCount === 0) {
+                    resetToLobby('Room kosong.');
+                } else {
+                    renderPlayers();
+                    renderGame();
                 }
                 break;
+
             case 'GAME_STARTED':
+                app.gameRunning = true;
                 showMessage(message.message, 'success');
-                // State game awal akan dikirim melalui GAME_STATE_UPDATE
+                setRoomStatus('Game berjalan.', 'success');
+                renderGame();
                 break;
-            case 'GAME_STATE_UPDATE':
-                currentGameState = message.gameState;
-                renderGame(currentGameState);
-                // Tambahan: tampilkan pesan dari server jika ada
-                if (currentGameState.messages && currentGameState.messages.length > 0) {
-                    currentGameState.messages.forEach(msg => showMessage(msg.text, msg.type));
-                    currentGameState.messages = []; // Bersihkan pesan setelah ditampilkan
+
+            case 'GAME_STATE_UPDATE': {
+                app.game = message.gameState;
+                // Pesan dari server hanya ditampilkan sekali (server sudah mengosongkan antrian).
+                (message.gameState.messages || []).forEach((m) => showMessage(m.text, m.type));
+                renderGame();
+                break;
+            }
+
+            case 'GAME_OVER':
+                app.gameRunning = false;
+                // Tandai papan sebagai selesai (server membawa game state terakhir sebelum GAME_OVER).
+                if (app.game) app.game = { ...app.game, winner: message.winnerId };
+                showMessage(message.message, 'success');
+                setRoomStatus(`${message.message} Tekan "Mulai Game" untuk main lagi.`, 'success');
+                if (app.game && message.winnerId === app.localPlayerId) {
+                    showMessage('Selamat, kamu menang! 🎉', 'success');
                 }
-                showMessage('Game state diperbarui.', 'info');
+                renderGame();
                 break;
+
+            case 'GAME_ABORTED':
+                app.gameRunning = false;
+                app.game = null;
+                showMessage(message.message, 'warning');
+                setRoomStatus(message.message, 'warning');
+                renderGame();
+                break;
+
             case 'ERROR':
-                showMessage(`Error: ${message.message}`, 'error');
-                showRoomStatus(`Error: ${message.message}`, 'error');
+                showMessage('Error: ' + message.message, 'error');
+                setRoomStatus('Error: ' + message.message, 'error');
                 break;
+
             default:
-                console.warn('Tipe pesan tidak dikenal dari server:', message.type);
-                showMessage(`Pesan tidak dikenal: ${message.type}`, 'warning');
+                console.warn('Tipe pesan tidak dikenal:', message.type);
         }
-    };
+    });
 
-    socket.onclose = (event) => {
-        console.log('Koneksi WebSocket ditutup:', event);
+    app.socket.addEventListener('close', () => {
         showMessage('Koneksi ke server terputus.', 'error');
-        showRoomStatus('Koneksi terputus. Silakan refresh halaman.', 'error');
-        currentRoomCode = null;
-        renderGame(null); // Kembali ke tampilan kontrol room
-        displayPlayerList(null);
-    };
+        setRoomStatus('Koneksi terputus. Muat ulang halaman untuk menyambung kembali.', 'error');
+        app.gameRunning = false;
+        resetToLobby(null);
+    });
 
-    socket.onerror = (error) => {
-        console.error('WebSocket Error:', error);
+    app.socket.addEventListener('error', () => {
         showMessage('Terjadi kesalahan pada koneksi WebSocket.', 'error');
-        showRoomStatus('Kesalahan koneksi.', 'error');
-    };
-
-    // --- Event Listener untuk Kontrol Room ---
-    createRoomBtn.addEventListener('click', () => {
-        if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-                type: 'CREATE_ROOM',
-                playerId: localPlayerId // Kirim ID pemain lokal
-            }));
-            showRoomStatus('Mencoba membuat room...', 'info');
-        } else {
-            showMessage('Tidak terhubung ke server. Coba lagi nanti.', 'error');
-        }
     });
+}
 
-    joinRoomBtn.addEventListener('click', () => {
-        const roomCode = roomCodeInput.value.trim();
-        if (roomCode && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-                type: 'JOIN_ROOM',
-                roomCode: roomCode,
-                playerId: localPlayerId // Kirim ID pemain lokal
-            }));
-            showRoomStatus('Mencoba bergabung ke room...', 'info');
-        } else if (!roomCode) {
-            showRoomStatus('Mohon masukkan kode room.', 'warning');
-        } else {
-            showMessage('Tidak terhubung ke server. Coba lagi nanti.', 'error');
-        }
-    });
+// --- Bootstrap --------------------------------------------------------------
+resetToLobby(null);
+setRoomStatus('Menghubungkan ke server...', 'info');
+connect();
 
-    drawCardBtn.addEventListener('click', () => {
-        if (socket.readyState === WebSocket.OPEN && currentRoomCode) {
-            socket.send(JSON.stringify({
-                type: 'DRAW_CARD',
-                roomCode: currentRoomCode,
-                playerId: localPlayerId
-            }));
-            showMessage("Mengirim permintaan ambil kartu ke server...", 'info');
-        } else {
-            showMessage("Tidak terhubung ke room atau server.", 'error');
-        }
-    });
-});
-
-// Expose fungsi-fungsi untuk debugging di console (opsional)
-window.createCardElement = createCardElement;
-window.renderGame = renderGame;
-window.currentGameState = currentGameState;
-window.localPlayerId = localPlayerId;
+// Untuk debugging di console browser
+window.unoApp = app;
