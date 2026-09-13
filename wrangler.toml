@@ -3,11 +3,28 @@ main = "server/index.js"
 compatibility_date = "2024-11-01"
 
 # Worker ini sekaligus menyajikan file statis dari folder client/.
-# Sebelumnya TIDAK ADA konfigurasi asset, sehingga index.html/app.js/style.css
-# tidak pernah ter-deploy dan halaman hanya menghasilkan 404.
 [assets]
 directory = "./client"
 binding = "ASSETS"
+
+# ---------------------------------------------------------------------------
+# Durable Object: satu instance memegang SEMUA room.
+#
+# Kenapa perlu: state room sebelumnya disimpan di Map tingkat modul, sedangkan
+# Cloudflare menjalankan Worker di banyak isolate sekaligus. Akibatnya room yang
+# dibuat di satu isolate tidak terlihat oleh pemain yang mendarat di isolate
+# lain -> "Kode room tidak ditemukan" (terbukti 4 dari 5 percobaan gagal).
+# Dengan Durable Object, semua koneksi masuk ke instance yang sama.
+#
+# new_sqlite_classes dipakai supaya jalan di paket gratis.
+# ---------------------------------------------------------------------------
+[[durable_objects.bindings]]
+name = "UNO"
+class_name = "UnoServer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UnoServer"]
 
 [observability]
 enabled = true

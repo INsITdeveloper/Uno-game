@@ -20,9 +20,13 @@ Server = Cloudflare Worker (WebSocket) yang jadi satu-satunya penentu sah/tidakn
 - **Bot** — memilih kartu berwarna sama lebih dulu, menyimpan Wild selama masih ada
   kartu normal, memakai kartu serang saat lawan hampir habis, dan memilih warna
   terbanyak di tangannya. Ada jeda berpikir 0,7–1,4 detik supaya terasa natural.
+- **Obrolan room** — chat teks antar pemain di lobby maupun saat bermain. Teks
+  dibersihkan dari karakter kontrol dan dibatasi 200 karakter di server.
 - **Anti-curang** — identitas pemain diambil dari koneksi WebSocket (bukan dari isi
   pesan), tangan lawan hanya dikirim sebagai jumlah kartu, dan seluruh aturan
   divalidasi ulang di server.
+- **State konsisten di semua isolate** — seluruh room dipegang oleh satu
+  **Durable Object**, sehingga kode room selalu bisa dipakai.
 
 ## Struktur
 
@@ -34,7 +38,7 @@ client/                    # file statis yang disajikan Worker (assets)
   assets/cards/            # 54 muka + 2 punggung kartu (400x620)
   assets/avatars/          # 14 avatar + fallback (256x256)
   assets/table/felt.jpg    # latar meja
-server/index.js            # Worker: WebSocket, lobby, matchmaking, bot, validasi
+server/index.js            # Worker + Durable Object: lobby, matchmaking, bot, chat, validasi
 shared/uno-logic.js        # aturan inti Uno
 shared/uno-bot.js          # kecerdasan bot
 tools/generate_cards.py    # generator aset kartu
@@ -67,6 +71,7 @@ npm test
 | `tests/bot.mjs` | identitas bot, strategi (kartu normal sebelum Wild, warna mayoritas), 40 game bot penuh |
 | `tests/server-e2e.mjs` | profil, avatar custom, lobby, hak host, bot jalan sendiri, matchmaking, fallback bot, keluar saat game |
 | `tests/cdn-upload.mjs` | **tidak ikut `npm test`** — upload sungguhan ke CDN INS. Jalankan `npm run test:cdn` |
+| `tests/production-check.mjs` | **tidak ikut `npm test`** — uji Worker yang sudah ter-deploy: halaman, aset, gabung room 8x, matchmaking, chat. Jalankan `npm run test:prod` |
 
 ## Avatar upload — integrasi CDN INS
 
@@ -176,11 +181,36 @@ Butuh `Pillow` (`pip install Pillow`).
 Punggung kartu default adalah `BACK_ornate.jpg` (ilustrasi ornamen). Ganti ke
 `assets/cards/BACK.png` di `client/index.html` kalau mau versi flat hasil generator.
 
+## Kenapa Durable Object (penting)
+
+Awalnya state room disimpan di `Map` tingkat modul. Itu **tidak berfungsi di
+produksi**: Cloudflare menjalankan Worker di banyak isolate sekaligus, jadi room
+yang dibuat di satu isolate tidak terlihat oleh pemain yang mendarat di isolate
+lain. Gejalanya acak — dari 5 percobaan, 4 gagal dengan pesan
+`"Kode room tidak ditemukan"`. Matchmaking juga ikut rusak karena kedua pemain
+harus berada di isolate yang sama.
+
+Sekarang seluruh koneksi diarahkan ke **satu Durable Object**
+(`env.UNO.idFromName('uno-global')`), jadi semua room berada di satu tempat.
+
+```toml
+[[durable_objects.bindings]]
+name = "UNO"
+class_name = "UnoServer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UnoServer"]   # sqlite = jalan di paket gratis
+```
+
+`UnoServer` juga menangani chat, matchmaking, dan giliran bot.
+
 ## Batasan yang perlu diketahui
 
-- State room disimpan di `Map` tingkat modul pada Worker. Cukup untuk `wrangler dev`
-  dan traffic ringan pada satu isolate, tetapi **tidak dijamin bertahan antar-isolate**.
-  Untuk produksi serius pindahkan ke **Durable Objects** (satu object per room).
-- Jeda bot memakai `setTimeout`, yang ikut mati kalau isolate Worker didaur ulang.
-- Belum ada: stacking +2/+4, challenge Wild Draw Four, skor antar ronde, dan
-  reconnect otomatis (refresh halaman = keluar dari room).
+- Satu Durable Object = satu titik pemrosesan. Untuk permainan bareng teman ini
+  lebih dari cukup; kalau nanti ramai, pecah jadi satu DO per room.
+- State room hidup di memori DO selama ada koneksi terbuka. Kalau DO didaur ulang
+  (misalnya setiap deploy), semua game berjalan ikut terputus.
+- Jeda bot memakai `setTimeout`, ikut mati kalau DO didaur ulang.
+- Belum ada: obrolan suara (voice), stacking +2/+4, challenge Wild Draw Four,
+  skor antar ronde, dan reconnect otomatis (refresh = keluar dari room).

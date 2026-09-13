@@ -29,9 +29,25 @@ globalThis.WebSocketPair = class {
 };
 globalThis.Response = class { constructor(body, init) { this.body = body; this.init = init; } };
 
-const worker = (await import('../server/index.js')).default;
+const mod = await import('../server/index.js');
+const worker = mod.default;
+const { UnoServer } = mod;
+
+// Simulasi binding Durable Object. Semua koneksi diarahkan ke SATU instance,
+// persis seperti idFromName('uno-global') di produksi. Inilah yang memperbaiki
+// bug "Kode room tidak ditemukan" akibat state terpisah antar-isolate.
+const doInstances = new Map();
+const env = {};
+env.UNO = {
+    idFromName: (name) => name,
+    get: (id) => {
+        if (!doInstances.has(id)) doInstances.set(id, new UnoServer({}, env));
+        return { fetch: (request) => doInstances.get(id).fetch(request) };
+    }
+};
+
 const req = () => ({ url: 'http://localhost/websocket', headers: { get: (k) => (k.toLowerCase() === 'upgrade' ? 'websocket' : null) } });
-const connect = async () => (await worker.fetch(req())).init.webSocket;
+const connect = async () => (await worker.fetch(req(), env)).init.webSocket;
 const send = (ws, obj) => ws.send(JSON.stringify(obj));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -236,6 +252,36 @@ send(J, { type: 'LEAVE_ROOM' });
 ok(String(I.last('GAME_ABORTED')?.message).includes('tidak cukup'), 'pemain keluar -> game dibatalkan');
 ok(I.last('PLAYER_LEFT') !== null, 'sisa pemain menerima PLAYER_LEFT');
 I.close(); J.close();
+
+// ===========================================================================
+console.log('\n--- 9. Obrolan (chat) ---');
+const K = await connect(), L = await connect();
+send(K, { type: 'CREATE_ROOM', playerId: 'player_KKK', profile: { name: 'Kiki', avatar: 'a03' } });
+const chatRoom = K.last('ROOM_CREATED').roomCode;
+send(L, { type: 'JOIN_ROOM', roomCode: chatRoom, playerId: 'player_LLL', profile: { name: 'Lala', avatar: 'a04' } });
+K.clear(); L.clear();
+
+send(K, { type: 'CHAT_SEND', text: '  halo   dunia  ' });
+const chatA = await waitFor(K, 'CHAT_MESSAGE', 2000);
+const chatB = await waitFor(L, 'CHAT_MESSAGE', 2000);
+ok(chatA && chatB, 'pesan chat sampai ke pengirim DAN lawan');
+ok(chatA?.text === 'halo dunia', `spasi dirapikan ("${chatA?.text}")`);
+ok(chatB?.name === 'Kiki', 'nama pengirim ikut terkirim');
+ok(chatB?.avatar === 'a03', 'avatar pengirim ikut terkirim');
+ok(chatB?.isBot === false, 'penanda bot benar');
+
+send(K, { type: 'CHAT_SEND', text: '\u0000\u0007   ' });
+ok(String(K.last('ERROR')?.message).includes('kosong'), 'pesan berisi karakter kontrol saja ditolak');
+
+K.clear(); L.clear();
+send(K, { type: 'CHAT_SEND', text: 'x'.repeat(500) });
+const longMsg = await waitFor(L, 'CHAT_MESSAGE', 2000);
+ok(longMsg?.text.length === 200, `panjang pesan dibatasi 200 (dapat ${longMsg?.text.length})`);
+
+const M2 = await connect();
+send(M2, { type: 'CHAT_SEND', text: 'hai' });
+ok(String(M2.last('ERROR')?.message).includes('room'), 'chat dari luar room ditolak');
+M2.close(); K.close(); L.close();
 
 console.log(fail === 0 ? '\n=== E2E SERVER: SEMUA LULUS ===' : `\n=== E2E SERVER: ${fail} GAGAL ===`);
 process.exit(fail ? 1 : 0);

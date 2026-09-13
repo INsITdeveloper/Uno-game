@@ -10,9 +10,10 @@
     "test": "node tests/sim.mjs && node tests/bot.mjs && node tests/server-e2e.mjs",
     "cards": "python3 tools/generate_cards.py",
     "avatars": "python3 tools/generate_avatars.py",
-    "test:cdn": "RUN_CDN_TEST=1 node tests/cdn-upload.mjs"
+    "test:cdn": "RUN_CDN_TEST=1 node tests/cdn-upload.mjs",
+    "test:prod": "node tests/production-check.mjs"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^3.90.0"
   }
 }

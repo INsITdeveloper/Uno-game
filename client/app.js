@@ -77,6 +77,12 @@ const el = {
     rematchBtn: $('rematchBtn'),
     leaveGameBtn: $('leaveGameBtn'),
 
+    chatPanel: $('chatPanel'),
+    chatLog: $('chatLog'),
+    chatForm: $('chatForm'),
+    chatInput: $('chatInput'),
+    chatSendBtn: $('chatSendBtn'),
+
     gameMessages: $('gameMessages'),
     colorPicker: $('colorPicker'),
     cancelColorBtn: $('cancelColorBtn')
@@ -299,6 +305,47 @@ function showMessage(text, type = 'info') {
     }
 }
 
+function appendChat(msg) {
+    const mine = msg.playerId === app.localPlayerId;
+    const line = document.createElement('div');
+    line.className = 'chat-line' + (mine ? ' mine' : '');
+
+    const img = document.createElement('img');
+    applyAvatar(img, { avatar: msg.avatar, avatarUrl: msg.avatarUrl });
+    img.alt = '';
+    line.appendChild(img);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+
+    const author = document.createElement('span');
+    author.className = 'chat-author';
+    author.textContent = mine ? 'Kamu' : (msg.name || '?') + (msg.isBot ? ' 🤖' : '');
+
+    const text = document.createElement('span');
+    text.className = 'chat-text';
+    text.textContent = msg.text;
+
+    bubble.appendChild(author);
+    bubble.appendChild(text);
+    line.appendChild(bubble);
+    el.chatLog.appendChild(line);
+
+    // batasi riwayat supaya tidak tumbuh tanpa henti
+    while (el.chatLog.children.length > 60) {
+        el.chatLog.removeChild(el.chatLog.firstChild);
+    }
+    el.chatLog.scrollTop = el.chatLog.scrollHeight;
+}
+
+function sendChat() {
+    const text = el.chatInput.value.trim();
+    if (!text) return;
+    if (!send({ type: 'CHAT_SEND', text })) return;
+    el.chatInput.value = '';
+    el.chatInput.focus();
+}
+
 function setConn(text, type = 'info') {
     el.connState.textContent = text;
     el.connState.className = 'conn ' + type;
@@ -337,6 +384,10 @@ function showScreen(name) {
     Object.entries(el.screens).forEach(([key, node]) => {
         node.hidden = key !== name;
     });
+    // Obrolan hanya muncul saat sudah berada di sebuah room
+    const inRoom = Boolean(app.roomCode) && (name === 'room' || name === 'game');
+    el.chatPanel.hidden = !inRoom;
+    if (inRoom) el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +779,11 @@ el.leaveRoomBtn.addEventListener('click', () => send({ type: 'LEAVE_ROOM' }));
 el.leaveGameBtn.addEventListener('click', () => send({ type: 'LEAVE_ROOM' }));
 el.rematchBtn.addEventListener('click', () => send({ type: 'START_GAME' }));
 
+el.chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendChat();
+});
+
 // ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
@@ -775,6 +831,7 @@ function resetToHome() {
     app.gameRunning = false;
     app.isMyTurn = false;
     app.autoBot = false;
+    el.chatLog.innerHTML = '';
     renderGame();
     showScreen('home');
 }
@@ -895,6 +952,10 @@ function handleServerMessage(message) {
             break;
 
         // --------------------------------------------------------- LAINNYA
+        case 'CHAT_MESSAGE':
+            appendChat(message);
+            break;
+
         case 'ERROR':
             showMessage('Error: ' + message.message, 'error');
             if (app.autoBot && /room|bot|pemain/i.test(message.message)) app.autoBot = false;

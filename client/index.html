@@ -129,6 +129,20 @@
         </div>
     </section>
 
+    <!-- Obrolan room -->
+    <section class="chat-panel" id="chatPanel" hidden>
+        <header class="chat-head">
+            <span>Obrolan</span>
+            <span class="chat-hint">tekan Enter untuk kirim</span>
+        </header>
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-form" id="chatForm" autocomplete="off">
+            <input type="text" id="chatInput" maxlength="200" placeholder="Tulis pesan..."
+                   autocomplete="off" spellcheck="false">
+            <button type="submit" id="chatSendBtn">Kirim</button>
+        </form>
+    </section>
+
     <div class="messages" id="gameMessages"></div>
 </div>
 
