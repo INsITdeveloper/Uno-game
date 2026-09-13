@@ -1,8 +1,9 @@
 // server/index.js
-// Cloudflare Worker: WebSocket + otorisasi room untuk game Uno.
+// Cloudflare Worker: WebSocket, profil pemain, matchmaking, lawan bot, dan
+// otorisasi seluruh aksi permainan.
 //
 // PRINSIP: server adalah satu-satunya sumber kebenaran.
-// Klien hanya menyampaikan niat ("saya mau main kartu X"); server yang memutuskan sah/tidaknya.
+// Klien hanya menyampaikan niat ("saya mau main kartu X"); server yang memutuskan.
 
 import {
     initializeGame,
@@ -15,28 +16,52 @@ import {
     MIN_PLAYERS,
     MAX_PLAYERS
 } from '../shared/uno-logic.js';
+import { chooseBotAction, randomBotIdentity } from '../shared/uno-bot.js';
 
 /**
+ * @typedef {Object} Member
+ * @property {string} id
+ * @property {WebSocket|null} ws   null = bot
+ * @property {string} name
+ * @property {string} avatar
+ * @property {boolean} isBot
+ *
  * @typedef {Object} Room
- * @property {Map<string, WebSocket>} players
- * @property {string[]} playerOrder
- * @property {object|null} gameLogicState
+ * @property {string} code
+ * @property {Map<string, Member>} members
+ * @property {string[]} order          urutan giliran; indeks sejajar dengan game.players
+ * @property {string} hostId
+ * @property {'private'|'matchmaking'} mode
+ * @property {object|null} game
+ * @property {ReturnType<typeof setTimeout>|null} botTimer
  */
 
 /** @type {Map<string, Room>} */
 const rooms = new Map();
 
-/** Pemetaan socket server -> identitas pemain. Sumber kebenaran identitas, bukan message.playerId. */
-/** @type {Map<WebSocket, {playerId: string, roomCode: string}>} */
+/** Identitas pemain terikat ke koneksi (bukan dari message.playerId). @type {Map<WebSocket, {playerId: string, roomCode: string}>} */
 const connections = new Map();
+
+/** Antrean matchmaking. @type {Array<{ws: WebSocket, playerId: string, name: string, avatar: string, timer: any}>} */
+const queue = [];
 
 const VALID_CARD_COLORS = new Set([...UNO_COLORS, 'WILD']);
 const VALID_CARD_TYPES = new Set([...UNO_NUMBERS, ...UNO_ACTION_CARDS, ...UNO_WILD_CARDS]);
 const PLAYER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const AVATAR_PATTERN = /^(a(0[1-9]|1[0-4])|fallback)$/;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024;
+// Avatar hasil upload hanya boleh berasal dari CDN INS (allow-list).
+// Tanpa ini, pemain bisa menempelkan URL sembarang yang dilihat pemain lain.
+const AVATAR_URL_HOSTS = new Set(['cloudins-cdn.insjay.biz.id', 'cdnins.insjay.biz.id']);
+const MAX_AVATAR_URL_LENGTH = 400;
+const MAX_BOTS = 3;
+const MAX_NAME_LENGTH = 16;
+const MATCH_BOT_FALLBACK_MS = 7000;
+const BOT_THINK_MIN_MS = 700;
+const BOT_THINK_MAX_MS = 1400;
 
 // ---------------------------------------------------------------------------
-// Helper
+// Helper umum
 // ---------------------------------------------------------------------------
 
 function generateUniqueRoomCode() {
@@ -50,6 +75,7 @@ function generateUniqueRoomCode() {
 }
 
 function sendTo(ws, message) {
+    if (!ws) return;
     try {
         ws.send(JSON.stringify(message));
     } catch (err) {
@@ -61,17 +87,42 @@ function sendError(ws, message) {
     sendTo(ws, { type: 'ERROR', message });
 }
 
-function broadcast(roomCode, message, excludePlayerId = null) {
-    const room = rooms.get(roomCode);
-    if (!room) return;
-    for (const [playerId, ws] of room.players) {
-        if (excludePlayerId && playerId === excludePlayerId) continue;
-        sendTo(ws, message);
-    }
-}
-
 function sanitizePlayerId(raw) {
     return typeof raw === 'string' && PLAYER_ID_PATTERN.test(raw) ? raw : null;
+}
+
+function sanitizeName(raw) {
+    if (typeof raw !== 'string') return null;
+    // buang karakter kontrol & rapikan spasi
+    const clean = raw.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
+    if (clean.length < 1 || clean.length > MAX_NAME_LENGTH) return null;
+    return clean;
+}
+
+function sanitizeAvatar(raw) {
+    return typeof raw === 'string' && AVATAR_PATTERN.test(raw) ? raw : 'fallback';
+}
+
+function sanitizeAvatarUrl(raw) {
+    if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_AVATAR_URL_LENGTH) return null;
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        return null;
+    }
+    if (parsed.protocol !== 'https:') return null;
+    if (!AVATAR_URL_HOSTS.has(parsed.hostname)) return null;
+    return parsed.toString();
+}
+
+function sanitizeProfile(raw) {
+    const profile = raw && typeof raw === 'object' ? raw : {};
+    return {
+        name: sanitizeName(profile.name) || 'Pemain',
+        avatar: sanitizeAvatar(profile.avatar),
+        avatarUrl: sanitizeAvatarUrl(profile.avatarUrl)
+    };
 }
 
 function sanitizeCard(raw) {
@@ -82,21 +133,125 @@ function sanitizeCard(raw) {
     return { color, type };
 }
 
-/** State yang dikirim ke satu pemain: hanya tangan pemain itu yang terlihat penuh. */
+/** Ringkasan pemain untuk dikirim ke klien (tanpa data internal). */
+function publicPlayers(room) {
+    return room.order.map((id) => {
+        const m = room.members.get(id);
+        return m
+            ? { id: m.id, name: m.name, avatar: m.avatar, avatarUrl: m.avatarUrl, isBot: m.isBot }
+            : { id, name: '?', avatar: 'fallback', avatarUrl: null, isBot: false };
+    });
+}
+
+function broadcast(roomCode, message, excludePlayerId = null) {
+    const room = rooms.get(roomCode);
+    if (!room) return;
+    for (const [playerId, m] of room.members) {
+        if (excludePlayerId && playerId === excludePlayerId) continue;
+        sendTo(m.ws, message);
+    }
+}
+
+function broadcastLobby(roomCode) {
+    broadcast(roomCode, {
+        type: 'ROOM_UPDATE',
+        roomCode,
+        hostId: rooms.get(roomCode)?.hostId ?? null,
+        playerList: publicPlayers(rooms.get(roomCode))
+    });
+}
+
+function stopBotTimer(room) {
+    if (room && room.botTimer) {
+        clearTimeout(room.botTimer);
+        room.botTimer = null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Room & keanggotaan
+// ---------------------------------------------------------------------------
+
+function createRoom(mode, hostId) {
+    let code = generateUniqueRoomCode();
+    const room = {
+        code,
+        members: new Map(),
+        order: [],
+        hostId: hostId ?? null,
+        mode,
+        game: null,
+        botTimer: null
+    };
+    rooms.set(code, room);
+    return room;
+}
+
+function addHuman(room, playerId, ws, profile) {
+    room.members.set(playerId, {
+        id: playerId,
+        ws,
+        name: profile.name,
+        avatar: profile.avatar,
+        avatarUrl: profile.avatarUrl || null,
+        isBot: false
+    });
+    room.order.push(playerId);
+    connections.set(ws, { playerId, roomCode: room.code });
+}
+
+function addBot(room) {
+    const taken = [...room.members.values()].map((m) => m.name);
+    const identity = randomBotIdentity(Math.random, taken);
+    const botId = 'bot_' + Math.random().toString(36).substring(2, 9);
+    room.members.set(botId, {
+        id: botId,
+        ws: null,
+        name: identity.name,
+        avatar: identity.avatar,
+        avatarUrl: null,
+        isBot: true
+    });
+    room.order.push(botId);
+    return botId;
+}
+
+function promoteHostIfNeeded(room) {
+    if (room.hostId && room.members.has(room.hostId)) return;
+    const next = room.order.find((id) => !room.members.get(id)?.isBot);
+    room.hostId = next ?? null;
+}
+
+function isHost(room, playerId) {
+    return room.hostId === playerId;
+}
+
+// ---------------------------------------------------------------------------
+// State game
+// ---------------------------------------------------------------------------
+
 function buildStateFor(room, index, pendingMessages) {
-    const game = room.gameLogicState;
+    const game = room.game;
     return {
         playerHand: game.players[index],
-        players: game.players.map((hand, i) => ({
-            id: room.playerOrder[i] ?? null,
-            count: hand.length,
-            isYou: i === index
-        })),
+        players: game.players.map((hand, i) => {
+            const id = room.order[i];
+            const m = room.members.get(id);
+            return {
+                id,
+                name: m ? m.name : '?',
+                avatar: m ? m.avatar : 'fallback',
+                avatarUrl: m ? m.avatarUrl : null,
+                isBot: Boolean(m && m.isBot),
+                count: hand.length,
+                isYou: i === index
+            };
+        }),
         discardPile: game.discardPile,
         lastPlayedCard: game.lastPlayedCard,
         currentColor: game.currentColor,
         currentPlayerIndex: game.currentPlayerIndex,
-        currentPlayerId: room.playerOrder[game.currentPlayerIndex] ?? null,
+        currentPlayerId: room.order[game.currentPlayerIndex] ?? null,
         direction: game.direction,
         pendingDraw: game.pendingDraw,
         deckCount: game.deck.length,
@@ -105,24 +260,20 @@ function buildStateFor(room, index, pendingMessages) {
     };
 }
 
-/**
- * Kirim state game ke semua pemain. Antrian pesan di-drain SEKALI supaya
- * tidak terkirim berulang maupun hilang.
- */
+/** Kirim state ke semua pemain manusia. Antrean pesan di-drain sekali. */
 function broadcastGameState(roomCode) {
     const room = rooms.get(roomCode);
-    if (!room || !room.gameLogicState) return;
+    if (!room || !room.game) return;
 
-    const pending = room.gameLogicState.messages.splice(0); // drain sekali
+    const pending = room.game.messages.splice(0);
 
-    room.playerOrder.forEach((playerId, index) => {
-        const ws = room.players.get(playerId);
-        if (ws) {
-            sendTo(ws, {
-                type: 'GAME_STATE_UPDATE',
-                gameState: buildStateFor(room, index, pending)
-            });
-        }
+    room.order.forEach((playerId, index) => {
+        const m = room.members.get(playerId);
+        if (!m || !m.ws) return; // bot tidak dikirimi apa pun
+        sendTo(m.ws, {
+            type: 'GAME_STATE_UPDATE',
+            gameState: buildStateFor(room, index, pending)
+        });
     });
 }
 
@@ -130,9 +281,9 @@ function startGame(roomCode) {
     const room = rooms.get(roomCode);
     if (!room) return;
 
-    const numPlayers = room.playerOrder.length;
+    const numPlayers = room.order.length;
     if (numPlayers < MIN_PLAYERS || numPlayers > MAX_PLAYERS) {
-        sendError(room.players.values().next().value, `Butuh ${MIN_PLAYERS}-${MAX_PLAYERS} pemain.`);
+        broadcast(roomCode, { type: 'ERROR', message: `Butuh ${MIN_PLAYERS}-${MAX_PLAYERS} pemain.` });
         return;
     }
 
@@ -142,70 +293,205 @@ function startGame(roomCode) {
         return;
     }
 
-    room.gameLogicState = state;
-    console.log(`Room ${roomCode}: game dimulai dengan ${numPlayers} pemain.`);
+    room.game = state;
+    console.log(`Room ${room.code}: game dimulai dengan ${numPlayers} pemain (${room.mode}).`);
 
     broadcast(roomCode, {
         type: 'GAME_STARTED',
-        message: `Game dimulai dengan ${numPlayers} pemain!`
+        message: `Game dimulai — ${numPlayers} pemain.`
     });
     broadcastGameState(roomCode);
+    maybeRunBots(roomCode);
 }
 
 function endGame(roomCode, winnerIndex) {
     const room = rooms.get(roomCode);
-    if (!room || !room.gameLogicState) return;
+    if (!room || !room.game) return;
 
-    const winnerId = room.playerOrder[winnerIndex] ?? null;
-    room.gameLogicState.winner = winnerIndex;
+    stopBotTimer(room);
+    const winnerId = room.order[winnerIndex] ?? null;
+    const winner = room.members.get(winnerId);
+    room.game.winner = winnerIndex;
 
     broadcast(roomCode, {
         type: 'GAME_OVER',
         winnerId,
-        message: `Pemain ${winnerId ? winnerId.substring(0, 7) : '?'} menang!`
+        winnerName: winner ? winner.name : '?',
+        isBot: Boolean(winner && winner.isBot),
+        message: `${winner ? winner.name : '?'} menang!`
     });
 
-    // Room tetap hidup supaya pemain bisa main lagi / pemain baru bisa masuk.
-    room.gameLogicState = null;
+    // Room tetap hidup supaya bisa main lagi / pemain baru masuk.
+    room.game = null;
 }
 
-/**
- * Keluarkan sebuah socket dari room-nya (dipakai untuk LEAVE_ROOM dan saat koneksi ditutup).
- * Menjaga agar playerOrder dan gameLogicState.players selalu sinkron.
- */
+// ---------------------------------------------------------------------------
+// Bot
+// ---------------------------------------------------------------------------
+
+function maybeRunBots(roomCode) {
+    const room = rooms.get(roomCode);
+    if (!room || !room.game || room.game.winner !== null) return;
+    if (room.botTimer) return;
+
+    const currentId = room.order[room.game.currentPlayerIndex];
+    const member = room.members.get(currentId);
+    if (!member || !member.isBot) return;
+
+    const delay = BOT_THINK_MIN_MS + Math.random() * (BOT_THINK_MAX_MS - BOT_THINK_MIN_MS);
+    room.botTimer = setTimeout(() => {
+        room.botTimer = null;
+        runBotTurn(roomCode);
+    }, delay);
+}
+
+function runBotTurn(roomCode) {
+    const room = rooms.get(roomCode);
+    if (!room || !room.game || room.game.winner !== null) return;
+
+    const index = room.game.currentPlayerIndex;
+    const botId = room.order[index];
+    const member = room.members.get(botId);
+    if (!member || !member.isBot) return;
+
+    const action = chooseBotAction(room.game, index);
+
+    if (action.kind === 'play') {
+        const updated = playCard(room.game, index, action.card, action.chosenColor);
+        if (!updated) {
+            // Jaring pengaman: kalau bot memilih kartu tak valid, ambil kartu saja.
+            playerDrawsCard(room.game, index, true);
+            broadcastGameState(roomCode);
+            maybeRunBots(roomCode);
+            return;
+        }
+
+        if (updated.players[index].length === 1) {
+            updated.messages.push({ type: 'warning', text: `${member.name} tinggal 1 kartu — UNO!` });
+        }
+        broadcastGameState(roomCode);
+
+        if (updated.players[index].length === 0) {
+            endGame(roomCode, index);
+            return;
+        }
+    } else {
+        playerDrawsCard(room.game, index, true);
+        broadcastGameState(roomCode);
+    }
+
+    maybeRunBots(roomCode);
+}
+
+// ---------------------------------------------------------------------------
+// Matchmaking
+// ---------------------------------------------------------------------------
+
+function dequeue(entry) {
+    const i = queue.indexOf(entry);
+    if (i !== -1) queue.splice(i, 1);
+    if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+    }
+    return i !== -1;
+}
+
+function notifyMatchFound(room, entries) {
+    const payload = {
+        type: 'MATCH_FOUND',
+        roomCode: room.code,
+        hostId: room.hostId,
+        playerList: publicPlayers(room)
+    };
+    for (const entry of entries) sendTo(entry.ws, payload);
+}
+
+function tryMatch() {
+    while (queue.length >= 2) {
+        // Pilih dua pemain acak (bukan selalu pasangan pertama)
+        const a = queue.splice(Math.floor(Math.random() * queue.length), 1)[0];
+        const b = queue.splice(Math.floor(Math.random() * queue.length), 1)[0];
+        dequeue(a);
+        dequeue(b);
+
+        const room = createRoom('matchmaking', a.playerId);
+        addHuman(room, a.playerId, a.ws, { name: a.name, avatar: a.avatar, avatarUrl: a.avatarUrl });
+        addHuman(room, b.playerId, b.ws, { name: b.name, avatar: b.avatar, avatarUrl: b.avatarUrl });
+        notifyMatchFound(room, [a, b]);
+        startGame(room.code);
+    }
+}
+
+/** Kalau tidak ada manusia lain dalam batas waktu, isi dengan bot. */
+function pairWithBot(entry) {
+    if (!dequeue(entry)) return;
+    const room = createRoom('matchmaking', entry.playerId);
+    addHuman(room, entry.playerId, entry.ws, {
+        name: entry.name,
+        avatar: entry.avatar,
+        avatarUrl: entry.avatarUrl
+    });
+    addBot(room);
+    notifyMatchFound(room, [entry]);
+    sendTo(entry.ws, { type: 'MATCH_BOT_FILLED', message: 'Belum ada pemain lain — kamu dilawankan dengan bot.' });
+    startGame(room.code);
+}
+
+function enqueueMatchmaking(ws, playerId, profile) {
+    const entry = {
+        ws,
+        playerId,
+        name: profile.name,
+        avatar: profile.avatar,
+        avatarUrl: profile.avatarUrl,
+        timer: null
+    };
+    queue.push(entry);
+    sendTo(ws, { type: 'MATCH_SEARCHING', message: 'Mencari pemain lain...' });
+
+    entry.timer = setTimeout(() => {
+        entry.timer = null;
+        pairWithBot(entry);
+    }, MATCH_BOT_FALLBACK_MS);
+
+    tryMatch();
+}
+
+// ---------------------------------------------------------------------------
+// Keluar room / koneksi putus
+// ---------------------------------------------------------------------------
+
 function removeSocketFromRoom(server) {
     const meta = connections.get(server);
     if (!meta) return;
 
     connections.delete(server);
 
-    const { roomCode, playerId } = meta;
-    const room = rooms.get(roomCode);
+    // Kalau sedang antre matchmaking, cabut dari antrean
+    const queued = queue.find((e) => e.ws === server);
+    if (queued) dequeue(queued);
+
+    const room = rooms.get(meta.roomCode);
     if (!room) return;
+    if (room.members.get(meta.playerId)?.ws !== server) return;
 
-    // Pastikan socket ini masih yang terdaftar (hindari race dengan rejoin).
-    if (room.players.get(playerId) !== server) return;
+    const orderIndex = room.order.indexOf(meta.playerId);
+    room.members.delete(meta.playerId);
+    if (orderIndex !== -1) room.order.splice(orderIndex, 1);
 
-    const orderIndex = room.playerOrder.indexOf(playerId);
-    room.players.delete(playerId);
-    if (orderIndex !== -1) room.playerOrder.splice(orderIndex, 1);
-
-    if (room.gameLogicState && orderIndex !== -1) {
-        const game = room.gameLogicState;
-
-        // Buang tangan pemain yang keluar agar indeks tangan tetap cocok dengan playerOrder.
-        if (orderIndex < game.players.length) {
-            game.players.splice(orderIndex, 1);
-        }
+    if (room.game && orderIndex !== -1) {
+        const game = room.game;
+        if (orderIndex < game.players.length) game.players.splice(orderIndex, 1);
 
         if (game.players.length < MIN_PLAYERS) {
-            room.gameLogicState = null;
-            broadcast(roomCode, {
+            stopBotTimer(room);
+            room.game = null;
+            broadcast(room.code, {
                 type: 'GAME_ABORTED',
                 message: 'Game dihentikan karena pemain tidak cukup.'
             });
         } else {
-            // Sesuaikan indeks giliran setelah satu pemain hilang.
             const before = game.currentPlayerIndex;
             if (orderIndex === before) {
                 game.currentPlayerIndex = orderIndex + (game.direction === -1 ? -1 : 0);
@@ -214,35 +500,39 @@ function removeSocketFromRoom(server) {
             }
             const total = game.players.length;
             game.currentPlayerIndex = ((game.currentPlayerIndex % total) + total) % total;
-
-            game.messages.push({
-                type: 'warning',
-                text: `Pemain ${playerId.substring(0, 7)} keluar dari permainan.`
-            });
         }
     }
 
-    broadcast(roomCode, {
+    promoteHostIfNeeded(room);
+
+    broadcast(room.code, {
         type: 'PLAYER_LEFT',
-        playerId,
-        playerCount: room.players.size,
-        playerList: [...room.playerOrder]
+        playerId: meta.playerId,
+        playerList: publicPlayers(room)
     });
 
-    if (room.players.size === 0) {
-        rooms.delete(roomCode);
-        console.log(`Room ${roomCode} dihapus (kosong).`);
-    } else if (room.gameLogicState) {
-        broadcastGameState(roomCode);
+    const humansLeft = room.order.filter((id) => !room.members.get(id)?.isBot).length;
+    if (humansLeft === 0) {
+        stopBotTimer(room);
+        rooms.delete(room.code);
+        console.log(`Room ${room.code} dihapus (tidak ada pemain manusia).`);
+        return;
+    }
+
+    if (room.game) {
+        broadcastGameState(room.code);
+        maybeRunBots(room.code);
+    } else {
+        broadcastLobby(room.code);
     }
 }
 
-/** Ambil room + identitas pemain yang terikat pada socket ini. */
+/** Sesi: room + identitas yang terikat pada socket. */
 function getSession(server) {
     const meta = connections.get(server);
     if (!meta) return { meta: null, room: null, playerIndex: -1 };
     const room = rooms.get(meta.roomCode) || null;
-    const playerIndex = room ? room.playerOrder.indexOf(meta.playerId) : -1;
+    const playerIndex = room ? room.order.indexOf(meta.playerId) : -1;
     return { meta, room, playerIndex };
 }
 
@@ -284,17 +574,14 @@ export default {
             }
 
             try {
-                handleMessage(server, message, request);
+                handleMessage(server, message);
             } catch (err) {
                 console.error('Error saat menangani pesan:', err);
                 sendError(server, 'Terjadi kesalahan di server.');
             }
         });
 
-        server.addEventListener('close', () => {
-            removeSocketFromRoom(server);
-        });
-
+        server.addEventListener('close', () => removeSocketFromRoom(server));
         server.addEventListener('error', (event) => {
             console.error('WebSocket error:', event.error ?? event);
             removeSocketFromRoom(server);
@@ -308,11 +595,11 @@ export default {
 // Penanganan pesan
 // ---------------------------------------------------------------------------
 
-function handleMessage(server, message, request) {
+function handleMessage(server, message) {
     const session = getSession(server);
 
     switch (message.type) {
-        // ---------------------------------------------------------------- ROOM
+        // ------------------------------------------------------------- LOBBY
         case 'CREATE_ROOM': {
             if (session.meta) {
                 sendError(server, 'Anda sudah berada di dalam room.');
@@ -324,22 +611,18 @@ function handleMessage(server, message, request) {
                 return;
             }
 
-            const roomCode = generateUniqueRoomCode();
-            rooms.set(roomCode, {
-                players: new Map([[playerId, server]]),
-                playerOrder: [playerId],
-                gameLogicState: null
-            });
-            connections.set(server, { playerId, roomCode });
+            const profile = sanitizeProfile(message.profile);
+            const room = createRoom('private', playerId);
+            addHuman(room, playerId, server, profile);
 
             sendTo(server, {
                 type: 'ROOM_CREATED',
-                roomCode,
+                roomCode: room.code,
                 playerId,
-                playerCount: 1,
-                playerList: [playerId]
+                hostId: room.hostId,
+                playerList: publicPlayers(room)
             });
-            console.log(`Room dibuat: ${roomCode} oleh ${playerId}`);
+            console.log(`Room dibuat: ${room.code} oleh ${profile.name} (${playerId})`);
             return;
         }
 
@@ -358,44 +641,66 @@ function handleMessage(server, message, request) {
                 return;
             }
 
-            const roomCodeToJoin = message.roomCode.trim().toUpperCase();
-            const room = rooms.get(roomCodeToJoin);
+            const code = message.roomCode.trim().toUpperCase();
+            const room = rooms.get(code);
             if (!room) {
                 sendError(server, 'Kode room tidak ditemukan.');
                 return;
             }
-            if (room.gameLogicState) {
-                sendError(server, 'Game di room ini sedang berjalan. Tunggu hingga selesai.');
+            if (room.game) {
+                sendError(server, 'Game di room ini sedang berjalan.');
                 return;
             }
-            if (room.players.has(playerId)) {
+            if (room.members.has(playerId)) {
                 sendError(server, 'Pemain dengan ID ini sudah ada di room.');
                 return;
             }
-            if (room.players.size >= MAX_PLAYERS) {
+            if (room.order.length >= MAX_PLAYERS) {
                 sendError(server, `Room sudah penuh (maks ${MAX_PLAYERS} pemain).`);
                 return;
             }
 
-            room.players.set(playerId, server);
-            room.playerOrder.push(playerId);
-            connections.set(server, { playerId, roomCode: roomCodeToJoin });
+            const profile = sanitizeProfile(message.profile);
+            addHuman(room, playerId, server, profile);
 
             sendTo(server, {
                 type: 'ROOM_JOINED',
-                roomCode: roomCodeToJoin,
+                roomCode: room.code,
                 playerId,
-                playerCount: room.players.size,
-                playerList: [...room.playerOrder]
+                hostId: room.hostId,
+                playerList: publicPlayers(room)
             });
-            broadcast(roomCodeToJoin, {
-                type: 'PLAYER_JOINED',
-                playerId,
-                playerCount: room.players.size,
-                playerList: [...room.playerOrder]
-            }, playerId);
+            broadcastLobby(room.code);
+            console.log(`${profile.name} bergabung ke room ${room.code} (${room.order.length} pemain).`);
+            return;
+        }
 
-            console.log(`${playerId} bergabung ke room ${roomCodeToJoin} (${room.players.size} pemain).`);
+        case 'FIND_MATCH': {
+            if (session.meta) {
+                sendError(server, 'Anda sudah berada di dalam room.');
+                return;
+            }
+            const playerId = sanitizePlayerId(message.playerId);
+            if (!playerId) {
+                sendError(server, 'playerId tidak valid.');
+                return;
+            }
+            if (queue.some((e) => e.playerId === playerId)) {
+                sendError(server, 'Anda sudah dalam antrean.');
+                return;
+            }
+            enqueueMatchmaking(server, playerId, sanitizeProfile(message.profile));
+            return;
+        }
+
+        case 'CANCEL_MATCH': {
+            const entry = queue.find((e) => e.ws === server);
+            if (!entry) {
+                sendError(server, 'Anda tidak sedang dalam antrean.');
+                return;
+            }
+            dequeue(entry);
+            sendTo(server, { type: 'MATCH_CANCELLED' });
             return;
         }
 
@@ -408,60 +713,115 @@ function handleMessage(server, message, request) {
             return;
         }
 
-        case 'START_GAME': {
-            if (!session.room) {
-                sendError(server, 'Anda tidak sedang berada di room mana pun.');
-                return;
-            }
-            if (session.room.gameLogicState) {
-                sendError(server, 'Game sudah berjalan.');
-                return;
-            }
-            if (session.room.players.size < MIN_PLAYERS) {
-                sendError(server, `Butuh minimal ${MIN_PLAYERS} pemain untuk memulai.`);
-                return;
-            }
-            startGame(session.meta.roomCode);
-            return;
-        }
-
-        // ---------------------------------------------------------------- GAME
-        case 'DRAW_CARD': {
-            // Identitas diambil dari koneksi, BUKAN dari message.playerId (anti-impersonasi).
-            const { meta, room, playerIndex } = getSession(server);
+        case 'ADD_BOT': {
+            const { meta, room } = session;
             if (!meta || !room) {
                 sendError(server, 'Anda tidak sedang berada di room mana pun.');
                 return;
             }
-            if (!room.gameLogicState) {
+            if (!isHost(room, meta.playerId)) {
+                sendError(server, 'Hanya pembuat room yang bisa menambah bot.');
+                return;
+            }
+            if (room.game) {
+                sendError(server, 'Game sudah berjalan.');
+                return;
+            }
+            const botCount = room.order.filter((id) => room.members.get(id)?.isBot).length;
+            if (botCount >= MAX_BOTS) {
+                sendError(server, `Maksimal ${MAX_BOTS} bot per room.`);
+                return;
+            }
+            if (room.order.length >= MAX_PLAYERS) {
+                sendError(server, `Room sudah penuh (maks ${MAX_PLAYERS} pemain).`);
+                return;
+            }
+            addBot(room);
+            broadcastLobby(room.code);
+            return;
+        }
+
+        case 'REMOVE_BOT': {
+            const { meta, room } = session;
+            if (!meta || !room) {
+                sendError(server, 'Anda tidak sedang berada di room mana pun.');
+                return;
+            }
+            if (!isHost(room, meta.playerId)) {
+                sendError(server, 'Hanya pembuat room yang bisa menghapus bot.');
+                return;
+            }
+            const botId = typeof message.botId === 'string' ? message.botId : '';
+            const member = room.members.get(botId);
+            if (!member || !member.isBot) {
+                sendError(server, 'Bot tidak ditemukan.');
+                return;
+            }
+            room.members.delete(botId);
+            room.order = room.order.filter((id) => id !== botId);
+            broadcastLobby(room.code);
+            return;
+        }
+
+        case 'START_GAME': {
+            const { meta, room } = session;
+            if (!meta || !room) {
+                sendError(server, 'Anda tidak sedang berada di room mana pun.');
+                return;
+            }
+            if (!isHost(room, meta.playerId)) {
+                sendError(server, 'Hanya pembuat room yang bisa memulai game.');
+                return;
+            }
+            if (room.game) {
+                sendError(server, 'Game sudah berjalan.');
+                return;
+            }
+            if (room.order.length < MIN_PLAYERS) {
+                sendError(server, `Butuh minimal ${MIN_PLAYERS} pemain. Tambah bot kalau belum ada lawan.`);
+                return;
+            }
+            startGame(meta.roomCode);
+            return;
+        }
+
+        // -------------------------------------------------------------- GAME
+        case 'DRAW_CARD': {
+            const { meta, room, playerIndex } = session;
+            if (!meta || !room) {
+                sendError(server, 'Anda tidak sedang berada di room mana pun.');
+                return;
+            }
+            if (!room.game) {
                 sendError(server, 'Game belum dimulai.');
                 return;
             }
-            if (playerIndex === -1 || room.gameLogicState.currentPlayerIndex !== playerIndex) {
+            if (playerIndex === -1 || room.game.currentPlayerIndex !== playerIndex) {
                 sendError(server, 'Bukan giliran Anda.');
                 return;
             }
 
-            const updated = playerDrawsCard(room.gameLogicState, playerIndex, true);
+            const updated = playerDrawsCard(room.game, playerIndex, true);
             if (!updated) {
                 sendError(server, 'Tidak dapat mengambil kartu (dek habis).');
                 return;
             }
             broadcastGameState(meta.roomCode);
+            maybeRunBots(meta.roomCode);
             return;
         }
 
         case 'PLAY_CARD': {
-            const { meta, room, playerIndex } = getSession(server);
+            const { meta, room, playerIndex } = session;
             if (!meta || !room) {
                 sendError(server, 'Anda tidak sedang berada di room mana pun.');
                 return;
             }
-            if (!room.gameLogicState) {
+            if (!room.game) {
                 sendError(server, 'Game belum dimulai.');
                 return;
             }
-            if (playerIndex === -1 || room.gameLogicState.currentPlayerIndex !== playerIndex) {
+            if (playerIndex === -1 || room.game.currentPlayerIndex !== playerIndex) {
                 sendError(server, 'Bukan giliran Anda.');
                 return;
             }
@@ -481,17 +841,17 @@ function handleMessage(server, message, request) {
                 }
             }
 
-            const updated = playCard(room.gameLogicState, playerIndex, card, chosenColor);
+            const updated = playCard(room.game, playerIndex, card, chosenColor);
             if (!updated) {
                 sendError(server, 'Kartu tidak valid untuk dimainkan.');
                 return;
             }
 
-            // Peringatan UNO
+            const me = room.members.get(meta.playerId);
             if (updated.players[playerIndex].length === 1) {
                 updated.messages.push({
                     type: 'warning',
-                    text: `Pemain ${playerIndex + 1} tinggal 1 kartu — UNO!`
+                    text: `${me ? me.name : 'Pemain'} tinggal 1 kartu — UNO!`
                 });
             }
 
@@ -499,7 +859,9 @@ function handleMessage(server, message, request) {
 
             if (updated.players[playerIndex].length === 0) {
                 endGame(meta.roomCode, playerIndex);
+                return;
             }
+            maybeRunBots(meta.roomCode);
             return;
         }
 

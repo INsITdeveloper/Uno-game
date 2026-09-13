@@ -1,50 +1,284 @@
 // client/app.js
-// Klien Uno: hanya menampilkan state dan mengirim niat ke server.
-// Seluruh validasi tetap dilakukan server.
+// Klien Uno: profil pemain, matchmaking, lobby, dan papan permainan.
+// Semua validasi tetap di server — klien hanya menampilkan dan mengirim niat.
 
 'use strict';
 
-// --- Referensi elemen -------------------------------------------------------
-const el = {
-    roomControls: document.getElementById('roomControls'),
-    roomBar: document.getElementById('roomBar'),
-    roomCodeLabel: document.getElementById('roomCodeLabel'),
-    roomCodeInput: document.getElementById('roomCodeInput'),
-    joinRoomBtn: document.getElementById('joinRoomBtn'),
-    createRoomBtn: document.getElementById('createRoomBtn'),
-    startGameBtn: document.getElementById('startGameBtn'),
-    leaveRoomBtn: document.getElementById('leaveRoomBtn'),
-    roomStatusMessage: document.getElementById('roomStatusMessage'),
-    playerList: document.getElementById('playerList'),
+const AVATARS = [
+    'a01', 'a02', 'a03', 'a04', 'a05', 'a06', 'a07',
+    'a08', 'a09', 'a10', 'a11', 'a12', 'a13', 'a14'
+];
+const PROFILE_KEY = 'uno.profile.v1';
+const COLORS = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
 
-    board: document.getElementById('board'),
-    turnIndicator: document.getElementById('turnIndicator'),
-    activeColor: document.getElementById('activeColor'),
-    deckInfo: document.getElementById('deckInfo'),
-    opponents: document.getElementById('opponents'),
-    discardPileTopCard: document.getElementById('discardPileTopCard'),
-    drawPile: document.getElementById('drawPile'),
-    playerHand: document.querySelector('.hand-cards'),
-    drawCardBtn: document.getElementById('drawCardBtn'),
-
-    gameMessages: document.getElementById('gameMessages'),
-
-    colorPicker: document.getElementById('colorPicker'),
-    cancelColorBtn: document.getElementById('cancelColorBtn')
+// CDN INS (cdnins.insjay.biz.id) untuk avatar hasil upload pemain.
+// Wajib HTTPS: halaman game berjalan di HTTPS, permintaan http:// akan diblokir browser.
+const CDN = {
+    uploadUrl: 'https://cdnins.insjay.biz.id/upload-send',
+    allowedHosts: ['cloudins-cdn.insjay.biz.id', 'cdnins.insjay.biz.id'],
+    userIdKey: 'uno.cdn.id.v1',
+    maxFileBytes: 8 * 1024 * 1024,
+    outputSize: 256
 };
 
-// --- State klien ------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+
+const el = {
+    connState: $('connState'),
+
+    screens: {
+        profile: $('screenProfile'),
+        home: $('screenHome'),
+        search: $('screenSearch'),
+        room: $('screenRoom'),
+        game: $('screenGame')
+    },
+
+    nameInput: $('nameInput'),
+    avatarGrid: $('avatarGrid'),
+    avatarPreview: $('avatarPreview'),
+    avatarPreviewLabel: $('avatarPreviewLabel'),
+    uploadAvatarBtn: $('uploadAvatarBtn'),
+    clearAvatarBtn: $('clearAvatarBtn'),
+    avatarFileInput: $('avatarFileInput'),
+    avatarUploadStatus: $('avatarUploadStatus'),
+    profileError: $('profileError'),
+    saveProfileBtn: $('saveProfileBtn'),
+
+    profileAvatar: $('profileAvatar'),
+    profileName: $('profileName'),
+    editProfileBtn: $('editProfileBtn'),
+    quickMatchBtn: $('quickMatchBtn'),
+    botGameBtn: $('botGameBtn'),
+    createRoomBtn: $('createRoomBtn'),
+    roomCodeInput: $('roomCodeInput'),
+    joinRoomBtn: $('joinRoomBtn'),
+
+    searchTitle: $('searchTitle'),
+    searchHint: $('searchHint'),
+    searchBotBtn: $('searchBotBtn'),
+    cancelSearchBtn: $('cancelSearchBtn'),
+
+    roomCodeLabel: $('roomCodeLabel'),
+    lobbyPlayers: $('lobbyPlayers'),
+    addBotBtn: $('addBotBtn'),
+    startGameBtn: $('startGameBtn'),
+    leaveRoomBtn: $('leaveRoomBtn'),
+    hostHint: $('hostHint'),
+
+    turnIndicator: $('turnIndicator'),
+    activeColor: $('activeColor'),
+    deckInfo: $('deckInfo'),
+    opponents: $('opponents'),
+    discardPileTopCard: $('discardPileTopCard'),
+    drawPile: $('drawPile'),
+    playerHand: document.querySelector('.hand-cards'),
+    drawCardBtn: $('drawCardBtn'),
+    rematchBtn: $('rematchBtn'),
+    leaveGameBtn: $('leaveGameBtn'),
+
+    gameMessages: $('gameMessages'),
+    colorPicker: $('colorPicker'),
+    cancelColorBtn: $('cancelColorBtn')
+};
+
 const app = {
     socket: null,
+    connected: false,
     localPlayerId: 'player_' + Math.random().toString(36).slice(2, 9),
+    profile: null,
+    pickingAvatar: null,
+    pickingAvatarUrl: null,
     roomCode: null,
-    players: [],        // [{ id, count, isYou }]
-    game: null,         // state game terakhir dari server
+    playerList: [],
+    hostId: null,
+    game: null,
     gameRunning: false,
-    isMyTurn: false
+    isMyTurn: false,
+    autoBot: false,   // true = setelah room dibuat, langsung tambah bot & mulai
+    screen: null
 };
 
-// --- Util -------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Util
+// ---------------------------------------------------------------------------
+
+function avatarSrc(id) {
+    return `assets/avatars/${AVATARS.includes(id) ? id : 'fallback'}.png`;
+}
+
+/**
+ * Identitas pemilik file di CDN. Tidak ada autentikasi di CDN-nya, jadi ID ini
+ * berlaku seperti kunci: acak 16 hex per browser supaya tidak mudah ditebak
+ * atau bertabrakan dengan pemain lain.
+ */
+function cdnUserId() {
+    let id = null;
+    try { id = localStorage.getItem(CDN.userIdKey); } catch { /* localStorage bisa diblokir */ }
+    if (id && /^uno-[a-f0-9]{16}$/.test(id)) return id;
+
+    const bytes = new Uint8Array(8);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+
+    id = 'uno-' + Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem(CDN.userIdKey, id); } catch { /* diabaikan */ }
+    return id;
+}
+
+/** Hanya URL dari host CDN yang kita kenal yang boleh dipakai sebagai avatar. */
+function isAllowedAvatarUrl(url) {
+    try {
+        const u = new URL(url);
+        return u.protocol === 'https:' && CDN.allowedHosts.includes(u.hostname);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Pasang gambar avatar ke sebuah <img>, dengan fallback otomatis ke avatar
+ * bawaan kalau URL custom-nya gagal dimuat.
+ * @param {HTMLImageElement} img
+ * @param {{avatar?:string, avatarUrl?:string}|string} source
+ */
+function applyAvatar(img, source) {
+    const presetId = source && typeof source === 'object' ? source.avatar : source;
+    const custom = source && typeof source === 'object' ? source.avatarUrl : null;
+    const fallback = avatarSrc(presetId);
+
+    img.onerror = () => {
+        img.onerror = null;
+        img.src = fallback;
+    };
+    img.src = custom && isAllowedAvatarUrl(custom) ? custom : fallback;
+    return img;
+}
+
+function setAvatarStatus(text, kind = 'info') {
+    el.avatarUploadStatus.textContent = text;
+    el.avatarUploadStatus.className = 'hint upload-' + kind;
+}
+
+/** Potong tengah + perkecil file gambar jadi JPEG persegi 256x256. */
+function fileToAvatarBlob(file, size = CDN.outputSize) {
+    return new Promise((resolve, reject) => {
+        const objectUrl = URL.createObjectURL(file);
+        const img = new Image();
+
+        img.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingQuality = 'high';
+
+                const scale = Math.max(size / img.width, size / img.height);
+                const w = img.width * scale;
+                const h = img.height * scale;
+                ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+
+                canvas.toBlob(
+                    (blob) => (blob ? resolve(blob) : reject(new Error('Gagal memproses gambar.'))),
+                    'image/jpeg',
+                    0.86
+                );
+            } catch (err) {
+                reject(err);
+            }
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error('File itu bukan gambar yang bisa dibaca.'));
+        };
+        img.src = objectUrl;
+    });
+}
+
+/** Kirim gambar ke CDN INS dan kembalikan URL publiknya. */
+function uploadAvatar(blob) {
+    return new Promise((resolve, reject) => {
+        const form = new FormData();
+        form.append('file', blob, 'avatar.jpg');
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', CDN.uploadUrl);
+        xhr.setRequestHeader('x-user-id', cdnUserId());
+        xhr.setRequestHeader('x-filename', `avatar-${Date.now()}.jpg`);
+        xhr.timeout = 45000;
+
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                setAvatarStatus(`Mengunggah\u2026 ${Math.round((e.loaded / e.total) * 100)}%`, 'info');
+            }
+        };
+
+        xhr.onload = () => {
+            let res = null;
+            try { res = JSON.parse(xhr.responseText); } catch { /* respons bukan JSON */ }
+
+            const body = res && typeof res === 'object' ? (res.data || res) : {};
+            const url = body.public_url || body.url || body.fileUrl || body.fix_url ||
+                body.user_media_url || body.path || null;
+
+            if (xhr.status === 200 && body.success !== false && url) {
+                if (!isAllowedAvatarUrl(url)) {
+                    reject(new Error('CDN mengembalikan URL yang tidak dikenali.'));
+                    return;
+                }
+                resolve(String(url));
+            } else {
+                const msg = (res && (res.message || res.error)) || `Upload gagal (HTTP ${xhr.status}).`;
+                reject(new Error(msg));
+            }
+        };
+        xhr.onerror = () => reject(new Error('Tidak bisa menghubungi CDN.'));
+        xhr.ontimeout = () => reject(new Error('Upload timeout. Coba lagi.'));
+
+        xhr.send(form);
+    });
+}
+
+async function handleAvatarFile(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+        setAvatarStatus('File harus berupa gambar (JPG/PNG/WebP).', 'error');
+        return;
+    }
+    if (file.size > CDN.maxFileBytes) {
+        setAvatarStatus('Ukuran file maksimal 8 MB.', 'error');
+        return;
+    }
+
+    el.uploadAvatarBtn.disabled = true;
+    setAvatarStatus('Memproses gambar\u2026', 'info');
+    try {
+        const blob = await fileToAvatarBlob(file);
+        const url = await uploadAvatar(blob);
+        app.pickingAvatarUrl = url;
+        renderAvatarPreview();
+        renderAvatarGrid();
+        setAvatarStatus('Avatar tersimpan di CDN. \u2714', 'ok');
+    } catch (err) {
+        setAvatarStatus(err.message || 'Upload gagal.', 'error');
+    } finally {
+        el.uploadAvatarBtn.disabled = false;
+        el.avatarFileInput.value = '';
+    }
+}
+
+function renderAvatarPreview() {
+    const hasCustom = Boolean(app.pickingAvatarUrl);
+    applyAvatar(el.avatarPreview, { avatar: app.pickingAvatar, avatarUrl: app.pickingAvatarUrl });
+    el.avatarPreviewLabel.textContent = hasCustom ? 'Foto kamu' : 'Avatar bawaan';
+    el.clearAvatarBtn.hidden = !hasCustom;
+}
+
+function isHost() {
+    return Boolean(app.hostId) && app.hostId === app.localPlayerId;
+}
 
 function send(payload) {
     if (app.socket && app.socket.readyState === WebSocket.OPEN) {
@@ -65,27 +299,27 @@ function showMessage(text, type = 'info') {
     }
 }
 
-function setRoomStatus(text, type = 'info') {
-    el.roomStatusMessage.textContent = text;
-    el.roomStatusMessage.className = 'message-item ' + type;
-}
-
-function getCardDisplayValue(type) {
-    switch (type) {
-        case 'SKIP': return '🚫';
-        case 'REVERSE': return '↔';
-        case 'DRAW_TWO': return '+2';
-        case 'WILD': return '🌈';
-        case 'WILD_DRAW_FOUR': return '+4';
-        default: return String(type);
-    }
+function setConn(text, type = 'info') {
+    el.connState.textContent = text;
+    el.connState.className = 'conn ' + type;
 }
 
 function colorLabel(color) {
     return { RED: 'Merah', YELLOW: 'Kuning', GREEN: 'Hijau', BLUE: 'Biru' }[color] || color || '-';
 }
 
-/** Salinan logika validasi untuk highlight saja (server tetap penentu akhir). */
+function getCardDisplayValue(type) {
+    switch (type) {
+        case 'SKIP': return 'skip';
+        case 'REVERSE': return 'reverse';
+        case 'DRAW_TWO': return '+2';
+        case 'WILD': return 'wild';
+        case 'WILD_DRAW_FOUR': return '+4';
+        default: return String(type);
+    }
+}
+
+/** Salinan aturan untuk highlight saja; server tetap penentu akhir. */
 function isCardPlayable(card, topCard, currentColor) {
     if (!topCard) return true;
     if (card.color === 'WILD') return true;
@@ -94,9 +328,170 @@ function isCardPlayable(card, topCard, currentColor) {
     return false;
 }
 
-// --- Render kartu -----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Navigasi layar
+// ---------------------------------------------------------------------------
 
-/** Nama file gambar kartu. Wild tidak memakai prefix warna. */
+function showScreen(name) {
+    app.screen = name;
+    Object.entries(el.screens).forEach(([key, node]) => {
+        node.hidden = key !== name;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Profil
+// ---------------------------------------------------------------------------
+
+function loadProfile() {
+    try {
+        const raw = localStorage.getItem(PROFILE_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || typeof p.name !== 'string' || !p.name.trim()) return null;
+        const avatarUrl = typeof p.avatarUrl === 'string' && isAllowedAvatarUrl(p.avatarUrl)
+            ? p.avatarUrl
+            : null;
+        return {
+            name: p.name.slice(0, 16),
+            avatar: AVATARS.includes(p.avatar) ? p.avatar : 'a01',
+            avatarUrl
+        };
+    } catch {
+        return null;
+    }
+}
+
+function persistProfile(profile) {
+    try {
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    } catch {
+        /* localStorage bisa diblokir; profil tetap dipakai di sesi ini */
+    }
+}
+
+function renderAvatarGrid() {
+    el.avatarGrid.innerHTML = '';
+    AVATARS.forEach((id) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'avatar-choice';
+        btn.dataset.avatar = id;
+        btn.setAttribute('aria-label', 'Avatar ' + id);
+        const img = document.createElement('img');
+        img.src = avatarSrc(id);
+        img.alt = '';
+        btn.appendChild(img);
+        btn.addEventListener('click', () => {
+            app.pickingAvatar = id;
+            app.pickingAvatarUrl = null;
+            renderAvatarGrid();
+            renderAvatarPreview();
+            setAvatarStatus('Memakai avatar bawaan.', 'info');
+        });
+        if (app.pickingAvatar === id && !app.pickingAvatarUrl) btn.classList.add('selected');
+        el.avatarGrid.appendChild(btn);
+    });
+}
+
+function openProfileScreen(prefill) {
+    if (!app.pickingAvatar) app.pickingAvatar = (prefill && prefill.avatar) || AVATARS[0];
+    app.pickingAvatarUrl = (prefill && prefill.avatarUrl) || null;
+    el.nameInput.value = (prefill && prefill.name) || '';
+    el.profileError.hidden = true;
+    setAvatarStatus('JPG/PNG/WebP, otomatis dipotong ke 256\u00d7256.', 'info');
+    renderAvatarGrid();
+    renderAvatarPreview();
+    showScreen('profile');
+    el.nameInput.focus();
+}
+
+function submitProfile() {
+    const name = el.nameInput.value.replace(/\s+/g, ' ').trim();
+    if (!name) {
+        el.profileError.textContent = 'Nama tidak boleh kosong.';
+        el.profileError.hidden = false;
+        return;
+    }
+    if (name.length > 16) {
+        el.profileError.textContent = 'Nama maksimal 16 karakter.';
+        el.profileError.hidden = false;
+        return;
+    }
+
+    app.profile = {
+        name,
+        avatar: app.pickingAvatar || AVATARS[0],
+        avatarUrl: app.pickingAvatarUrl || null
+    };
+    persistProfile(app.profile);
+    renderHome();
+    showScreen('home');
+    if (app.roomCode) {
+        // Sudah berada di room (mis. setelah reconnect) — kembali ke lobby
+        showScreen(app.gameRunning ? 'game' : 'room');
+    }
+}
+
+function renderHome() {
+    el.profileName.textContent = app.profile.name;
+    applyAvatar(el.profileAvatar, app.profile);
+}
+
+// ---------------------------------------------------------------------------
+// Render lobby
+// ---------------------------------------------------------------------------
+
+function renderLobby() {
+    el.roomCodeLabel.textContent = app.roomCode || '-----';
+    el.lobbyPlayers.innerHTML = '';
+
+    app.playerList.forEach((p, i) => {
+        const card = document.createElement('div');
+        card.className = 'player-card';
+        if (p.id === app.hostId) card.classList.add('is-host');
+        if (p.id === app.localPlayerId) card.classList.add('is-me');
+        if (p.isBot) card.classList.add('is-bot');
+
+        const img = document.createElement('img');
+        applyAvatar(img, p);
+        img.alt = '';
+        card.appendChild(img);
+
+        const info = document.createElement('div');
+        info.className = 'pc-info';
+        const nm = document.createElement('strong');
+        nm.textContent = p.name + (p.id === app.localPlayerId ? ' (kamu)' : '');
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = p.isBot ? 'BOT' : (p.id === app.hostId ? 'HOST' : 'Pemain ' + (i + 1));
+        info.appendChild(nm);
+        info.appendChild(tag);
+        card.appendChild(info);
+
+        if (isHost() && p.isBot) {
+            const del = document.createElement('button');
+            del.className = 'link danger';
+            del.textContent = 'Hapus';
+            del.addEventListener('click', () => send({ type: 'REMOVE_BOT', botId: p.id }));
+            card.appendChild(del);
+        }
+
+        el.lobbyPlayers.appendChild(card);
+    });
+
+    const host = isHost();
+    const botCount = app.playerList.filter((p) => p.isBot).length;
+    el.addBotBtn.disabled = !host || botCount >= 3 || app.playerList.length >= 10;
+    el.startGameBtn.disabled = !host || app.playerList.length < 2;
+    el.hostHint.hidden = host;
+    el.startGameBtn.textContent = app.playerList.length < 2 ? 'Butuh 2 pemain' : 'Mulai Game';
+}
+
+// ---------------------------------------------------------------------------
+// Render kartu & papan
+// ---------------------------------------------------------------------------
+
 function cardImageName(card) {
     return card.color === 'WILD' ? `${card.type}.png` : `${card.color}_${card.type}.png`;
 }
@@ -127,29 +522,17 @@ function createCardElement(card, { playable = false, small = false, onClick = nu
     return cardEl;
 }
 
-// --- Render game ------------------------------------------------------------
-
 function renderGame() {
-    const inRoom = Boolean(app.roomCode);
-    el.roomControls.hidden = inRoom;
-    el.roomBar.hidden = !inRoom;
-    el.board.hidden = !inRoom;
-
-    if (!inRoom) return;
-
-    el.roomCodeLabel.textContent = `Room: ${app.roomCode}`;
-    el.startGameBtn.hidden = app.gameRunning;
-    el.startGameBtn.disabled = app.players.length < 2;
-
     const game = app.game;
     if (!game) {
-        el.turnIndicator.textContent = 'Menunggu game dimulai...';
+        el.turnIndicator.textContent = 'Menunggu…';
         el.activeColor.textContent = '';
         el.deckInfo.textContent = '';
         el.opponents.innerHTML = '';
         el.playerHand.innerHTML = '';
         el.discardPileTopCard.innerHTML = '';
         el.drawCardBtn.disabled = true;
+        el.rematchBtn.hidden = true;
         return;
     }
 
@@ -157,7 +540,6 @@ function renderGame() {
         ? game.discardPile[game.discardPile.length - 1]
         : null;
 
-    // Discard pile
     el.discardPileTopCard.innerHTML = '';
     if (topCard) {
         el.discardPileTopCard.appendChild(createCardElement(topCard, { small: true }));
@@ -165,67 +547,66 @@ function renderGame() {
         el.discardPileTopCard.innerHTML = '<div class="card small empty"></div>';
     }
 
-    // Papan informasi
     const isMyTurn = game.currentPlayerId === app.localPlayerId;
-    app.isMyTurn = isMyTurn;
-    el.turnIndicator.textContent = game.winner !== null
-        ? 'Game selesai'
-        : (isMyTurn ? '⭐ GILIRAN KAMU' : 'Menunggu lawan...');
-    el.turnIndicator.classList.toggle('mine', isMyTurn);
+    app.isMyTurn = isMyTurn && game.winner === null;
 
-    el.activeColor.textContent = 'Warna aktif: ' + colorLabel(game.currentColor);
-    el.activeColor.dataset.color = game.currentColor || '';
-    el.deckInfo.textContent = `Dek: ${game.deckCount} kartu` + (game.direction === -1 ? ' • arah terbalik' : '');
+    const current = (game.players || []).find((p) => p.id === game.currentPlayerId);
+    if (game.winner !== null) {
+        el.turnIndicator.textContent = 'Game selesai';
+    } else if (isMyTurn) {
+        el.turnIndicator.textContent = '⭐ GILIRAN KAMU';
+    } else {
+        el.turnIndicator.textContent = current ? `Giliran ${current.name}…` : 'Menunggu…';
+    }
+    el.turnIndicator.classList.toggle('mine', isMyTurn && game.winner === null);
 
-    // Daftar lawan
+    el.activeColor.textContent = 'Warna: ' + colorLabel(game.currentColor);
+    el.deckInfo.textContent =
+        `Dek ${game.deckCount}` + (game.direction === -1 ? ' • arah terbalik' : '');
+
+    // Lawan
     el.opponents.innerHTML = '';
     (game.players || []).forEach((p) => {
         if (p.isYou) return;
         const chip = document.createElement('div');
-        chip.classList.add('opponent');
+        chip.className = 'opponent';
         if (p.id === game.currentPlayerId) chip.classList.add('active');
-        chip.textContent = `${(p.id || '?').substring(0, 7)}… — ${p.count} kartu`;
+
+        const img = document.createElement('img');
+        applyAvatar(img, p);
+        img.alt = '';
+        chip.appendChild(img);
+
+        const box = document.createElement('div');
+        box.className = 'opp-text';
+        const nm = document.createElement('strong');
+        nm.textContent = p.name + (p.isBot ? ' 🤖' : '');
+        const cnt = document.createElement('span');
+        cnt.textContent = `${p.count} kartu`;
+        box.appendChild(nm);
+        box.appendChild(cnt);
+        chip.appendChild(box);
+
         el.opponents.appendChild(chip);
     });
 
     // Tangan sendiri
     el.playerHand.innerHTML = '';
     (game.playerHand || []).forEach((card, index) => {
-        const playable = game.winner === null && isMyTurn && isCardPlayable(card, topCard, game.currentColor);
-        const cardEl = createCardElement(card, {
-            playable,
-            onClick: () => handlePlayCard(card)
-        });
+        const playable = game.winner === null && isMyTurn &&
+            isCardPlayable(card, topCard, game.currentColor);
+        const cardEl = createCardElement(card, { playable, onClick: () => handlePlayCard(card) });
         cardEl.dataset.cardIndexInHand = index;
         el.playerHand.appendChild(cardEl);
     });
 
-    el.drawCardBtn.disabled = !(isMyTurn && game.winner === null);
+    el.drawCardBtn.disabled = !app.isMyTurn;
+    el.rematchBtn.hidden = !(game.winner !== null && isHost());
 }
 
-function renderPlayers() {
-    if (!app.players.length) {
-        el.playerList.textContent = 'Menunggu pemain...';
-        return;
-    }
-    el.playerList.textContent = 'Pemain di room: ' + app.players
-        .map((id) => (id === app.localPlayerId ? 'Anda' : id.substring(0, 7) + '…'))
-        .join(', ');
-}
-
-function resetToLobby(message) {
-    app.roomCode = null;
-    app.players = [];
-    app.game = null;
-    app.gameRunning = false;
-    app.isMyTurn = false;
-    el.startGameBtn.hidden = true;
-    renderGame();
-    renderPlayers();
-    if (message) setRoomStatus(message, 'info');
-}
-
-// --- Aksi pemain ------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Aksi pemain
+// ---------------------------------------------------------------------------
 
 function pickColor() {
     return new Promise((resolve) => {
@@ -267,11 +648,7 @@ async function handlePlayCard(card) {
         }
     }
 
-    send({
-        type: 'PLAY_CARD',
-        card: { color: card.color, type: card.type },
-        chosenColor
-    });
+    send({ type: 'PLAY_CARD', card: { color: card.color, type: card.type }, chosenColor });
 }
 
 function drawCard() {
@@ -282,52 +659,86 @@ function drawCard() {
     send({ type: 'DRAW_CARD' });
 }
 
-// Satu listener saja untuk tombol ambil kartu (versi lama mendaftarkannya dua kali).
+// ---------------------------------------------------------------------------
+// Event listener
+// ---------------------------------------------------------------------------
+
 el.drawCardBtn.addEventListener('click', drawCard);
 el.drawPile.addEventListener('click', drawCard);
 
-el.createRoomBtn.addEventListener('click', () => {
-    if (send({ type: 'CREATE_ROOM', playerId: app.localPlayerId })) {
-        setRoomStatus('Membuat room...', 'info');
+el.saveProfileBtn.addEventListener('click', submitProfile);
+el.nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitProfile();
+});
+el.editProfileBtn.addEventListener('click', () => openProfileScreen(app.profile));
+
+// Upload avatar sendiri ke CDN INS
+el.uploadAvatarBtn.addEventListener('click', () => el.avatarFileInput.click());
+el.avatarFileInput.addEventListener('change', (e) => {
+    handleAvatarFile(e.target.files && e.target.files[0]);
+});
+el.clearAvatarBtn.addEventListener('click', () => {
+    app.pickingAvatarUrl = null;
+    renderAvatarPreview();
+    renderAvatarGrid();
+    setAvatarStatus('Kembali memakai avatar bawaan.', 'info');
+});
+
+el.quickMatchBtn.addEventListener('click', () => {
+    if (send({ type: 'FIND_MATCH', playerId: app.localPlayerId, profile: app.profile })) {
+        el.searchTitle.textContent = 'Mencari lawan…';
+        el.searchHint.textContent = 'Menunggu pemain lain bergabung.';
+        showScreen('search');
     }
+});
+
+el.botGameBtn.addEventListener('click', () => {
+    app.autoBot = true;
+    if (send({ type: 'CREATE_ROOM', playerId: app.localPlayerId, profile: app.profile })) {
+        setConn('Menyiapkan room bot…', 'info');
+    }
+});
+
+el.createRoomBtn.addEventListener('click', () => {
+    app.autoBot = false;
+    send({ type: 'CREATE_ROOM', playerId: app.localPlayerId, profile: app.profile });
 });
 
 el.joinRoomBtn.addEventListener('click', () => {
-    const roomCode = el.roomCodeInput.value.trim().toUpperCase();
-    if (!roomCode) {
-        setRoomStatus('Masukkan kode room terlebih dahulu.', 'warning');
+    const code = el.roomCodeInput.value.trim().toUpperCase();
+    if (!code) {
+        showMessage('Masukkan kode room dulu.', 'warning');
         return;
     }
-    if (send({ type: 'JOIN_ROOM', roomCode, playerId: app.localPlayerId })) {
-        setRoomStatus('Bergabung ke room...', 'info');
-    }
+    send({ type: 'JOIN_ROOM', roomCode: code, playerId: app.localPlayerId, profile: app.profile });
 });
-
 el.roomCodeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') el.joinRoomBtn.click();
 });
 
-el.startGameBtn.addEventListener('click', () => {
-    if (send({ type: 'START_GAME' })) {
-        setRoomStatus('Memulai game...', 'info');
-    }
+el.cancelSearchBtn.addEventListener('click', () => send({ type: 'CANCEL_MATCH' }));
+el.searchBotBtn.addEventListener('click', () => {
+    app.autoBot = true;
+    send({ type: 'CANCEL_MATCH' });
 });
 
-el.leaveRoomBtn.addEventListener('click', () => {
-    send({ type: 'LEAVE_ROOM' });
-    resetToLobby('Anda keluar dari room.');
-});
+el.addBotBtn.addEventListener('click', () => send({ type: 'ADD_BOT' }));
+el.startGameBtn.addEventListener('click', () => send({ type: 'START_GAME' }));
+el.leaveRoomBtn.addEventListener('click', () => send({ type: 'LEAVE_ROOM' }));
+el.leaveGameBtn.addEventListener('click', () => send({ type: 'LEAVE_ROOM' }));
+el.rematchBtn.addEventListener('click', () => send({ type: 'START_GAME' }));
 
-// --- WebSocket --------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// WebSocket
+// ---------------------------------------------------------------------------
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const serverUrl = `${protocol}//${window.location.host}/websocket`;
-
-    app.socket = new WebSocket(serverUrl);
+    app.socket = new WebSocket(`${protocol}//${window.location.host}/websocket`);
 
     app.socket.addEventListener('open', () => {
-        setRoomStatus('Terhubung ke server. Silakan buat atau gabung room.', 'success');
+        app.connected = true;
+        setConn('tersambung', 'ok');
     });
 
     app.socket.addEventListener('message', (event) => {
@@ -338,110 +749,178 @@ function connect() {
             console.warn('Pesan bukan JSON:', event.data);
             return;
         }
-
-        switch (message.type) {
-            case 'ROOM_CREATED':
-                app.roomCode = message.roomCode;
-                app.players = message.playerList || [message.playerId];
-                app.game = null;
-                app.gameRunning = false;
-                showMessage(`Room dibuat! Kode: ${message.roomCode}`, 'success');
-                setRoomStatus(`Anda di room ${message.roomCode}. Bagikan kode ini ke temanmu, lalu tekan "Mulai Game".`, 'info');
-                renderPlayers();
-                renderGame();
-                break;
-
-            case 'ROOM_JOINED':
-                app.roomCode = message.roomCode;
-                app.players = message.playerList || [];
-                app.game = null;
-                app.gameRunning = false;
-                showMessage(`Bergabung ke room ${message.roomCode}.`, 'success');
-                setRoomStatus(`Anda di room ${message.roomCode}. Menunggu host memulai game...`, 'info');
-                renderPlayers();
-                renderGame();
-                break;
-
-            case 'PLAYER_JOINED':
-                app.players = message.playerList || app.players;
-                showMessage(`Pemain ${message.playerId.substring(0, 7)}… bergabung (${message.playerCount} pemain).`, 'info');
-                setRoomStatus(`Total ${message.playerCount} pemain di room.`, 'info');
-                renderPlayers();
-                renderGame();
-                break;
-
-            case 'PLAYER_LEFT':
-                app.players = message.playerList || [];
-                showMessage(`Pemain ${message.playerId.substring(0, 7)}… keluar (${message.playerCount} pemain).`, 'warning');
-                if (message.playerCount === 0) {
-                    resetToLobby('Room kosong.');
-                } else {
-                    renderPlayers();
-                    renderGame();
-                }
-                break;
-
-            case 'GAME_STARTED':
-                app.gameRunning = true;
-                showMessage(message.message, 'success');
-                setRoomStatus('Game berjalan.', 'success');
-                renderGame();
-                break;
-
-            case 'GAME_STATE_UPDATE': {
-                app.game = message.gameState;
-                // Pesan dari server hanya ditampilkan sekali (server sudah mengosongkan antrian).
-                (message.gameState.messages || []).forEach((m) => showMessage(m.text, m.type));
-                renderGame();
-                break;
-            }
-
-            case 'GAME_OVER':
-                app.gameRunning = false;
-                // Tandai papan sebagai selesai (server membawa game state terakhir sebelum GAME_OVER).
-                if (app.game) app.game = { ...app.game, winner: message.winnerId };
-                showMessage(message.message, 'success');
-                setRoomStatus(`${message.message} Tekan "Mulai Game" untuk main lagi.`, 'success');
-                if (app.game && message.winnerId === app.localPlayerId) {
-                    showMessage('Selamat, kamu menang! 🎉', 'success');
-                }
-                renderGame();
-                break;
-
-            case 'GAME_ABORTED':
-                app.gameRunning = false;
-                app.game = null;
-                showMessage(message.message, 'warning');
-                setRoomStatus(message.message, 'warning');
-                renderGame();
-                break;
-
-            case 'ERROR':
-                showMessage('Error: ' + message.message, 'error');
-                setRoomStatus('Error: ' + message.message, 'error');
-                break;
-
-            default:
-                console.warn('Tipe pesan tidak dikenal:', message.type);
-        }
+        handleServerMessage(message);
     });
 
     app.socket.addEventListener('close', () => {
-        showMessage('Koneksi ke server terputus.', 'error');
-        setRoomStatus('Koneksi terputus. Muat ulang halaman untuk menyambung kembali.', 'error');
+        app.connected = false;
+        setConn('terputus', 'bad');
+        showMessage('Koneksi ke server terputus. Muat ulang halaman.', 'error');
+        app.roomCode = null;
         app.gameRunning = false;
-        resetToLobby(null);
+        app.game = null;
     });
 
     app.socket.addEventListener('error', () => {
+        setConn('error', 'bad');
         showMessage('Terjadi kesalahan pada koneksi WebSocket.', 'error');
     });
 }
 
-// --- Bootstrap --------------------------------------------------------------
-resetToLobby(null);
-setRoomStatus('Menghubungkan ke server...', 'info');
+function resetToHome() {
+    app.roomCode = null;
+    app.playerList = [];
+    app.hostId = null;
+    app.game = null;
+    app.gameRunning = false;
+    app.isMyTurn = false;
+    app.autoBot = false;
+    renderGame();
+    showScreen('home');
+}
+
+function handleServerMessage(message) {
+    switch (message.type) {
+        // ---------------------------------------------------------- LOBBY
+        case 'ROOM_CREATED':
+            app.roomCode = message.roomCode;
+            app.playerList = message.playerList || [];
+            app.hostId = message.hostId;
+            app.game = null;
+            app.gameRunning = false;
+            showMessage(`Room dibuat: ${message.roomCode}`, 'success');
+            setConn('di room ' + message.roomCode, 'info');
+            renderLobby();
+            showScreen('room');
+            if (app.autoBot) send({ type: 'ADD_BOT' });
+            break;
+
+        case 'ROOM_JOINED':
+            app.roomCode = message.roomCode;
+            app.playerList = message.playerList || [];
+            app.hostId = message.hostId;
+            app.game = null;
+            app.gameRunning = false;
+            showMessage(`Bergabung ke room ${message.roomCode}.`, 'success');
+            setConn('di room ' + message.roomCode, 'info');
+            renderLobby();
+            showScreen('room');
+            break;
+
+        case 'ROOM_UPDATE':
+            app.playerList = message.playerList || [];
+            app.hostId = message.hostId;
+            renderLobby();
+            if (app.autoBot && app.playerList.length >= 2) {
+                app.autoBot = false;
+                send({ type: 'START_GAME' });
+            }
+            break;
+
+        case 'PLAYER_LEFT':
+            app.playerList = message.playerList || [];
+            renderLobby();
+            break;
+
+        // ---------------------------------------------------- MATCHMAKING
+        case 'MATCH_SEARCHING':
+            el.searchTitle.textContent = 'Mencari lawan…';
+            el.searchHint.textContent = 'Menunggu pemain lain bergabung.';
+            showScreen('search');
+            break;
+
+        case 'MATCH_FOUND':
+            app.roomCode = message.roomCode;
+            app.playerList = message.playerList || [];
+            app.hostId = message.hostId;
+            showMessage(`Lawan ditemukan! Room ${message.roomCode}`, 'success');
+            setConn('di room ' + message.roomCode, 'info');
+            renderLobby();
+            break;
+
+        case 'MATCH_BOT_FILLED':
+            showMessage(message.message, 'warning');
+            break;
+
+        case 'MATCH_CANCELLED':
+            showMessage('Pencarian dibatalkan.', 'info');
+            if (app.autoBot) {
+                setConn('Menyiapkan room bot…', 'info');
+                send({ type: 'CREATE_ROOM', playerId: app.localPlayerId, profile: app.profile });
+            } else {
+                resetToHome();
+            }
+            break;
+
+        // ----------------------------------------------------------- GAME
+        case 'GAME_STARTED':
+            app.gameRunning = true;
+            setConn('bermain di ' + app.roomCode, 'ok');
+            showMessage(message.message, 'success');
+            showScreen('game');
+            renderGame();
+            break;
+
+        case 'GAME_STATE_UPDATE':
+            app.game = message.gameState;
+            (message.gameState.messages || []).forEach((m) => showMessage(m.text, m.type));
+            if (!app.gameRunning) {
+                app.gameRunning = true;
+                showScreen('game');
+            }
+            renderGame();
+            break;
+
+        case 'GAME_OVER':
+            app.gameRunning = false;
+            if (app.game) app.game = { ...app.game, winner: message.winnerId };
+            showMessage(message.message, 'success');
+            if (!message.isBot && message.winnerId === app.localPlayerId) {
+                showMessage('Selamat, kamu menang! 🎉', 'success');
+            }
+            renderGame();
+            break;
+
+        case 'GAME_ABORTED':
+            app.gameRunning = false;
+            app.game = null;
+            showMessage(message.message, 'warning');
+            renderGame();
+            if (app.roomCode) {
+                renderLobby();
+                showScreen('room');
+            } else {
+                resetToHome();
+            }
+            break;
+
+        // --------------------------------------------------------- LAINNYA
+        case 'ERROR':
+            showMessage('Error: ' + message.message, 'error');
+            if (app.autoBot && /room|bot|pemain/i.test(message.message)) app.autoBot = false;
+            break;
+
+        default:
+            console.warn('Tipe pesan tidak dikenal:', message.type);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
 connect();
+
+const saved = loadProfile();
+if (saved) {
+    app.profile = saved;
+    app.pickingAvatar = saved.avatar;
+    app.pickingAvatarUrl = saved.avatarUrl || null;
+    renderHome();
+    showScreen('home');
+} else {
+    openProfileScreen(null);
+}
 
 // Untuk debugging di console browser
 window.unoApp = app;

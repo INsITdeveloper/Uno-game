@@ -1,6 +1,28 @@
 # Uno Online
 
-Uno multiplayer sederhana: Cloudflare Worker (WebSocket) sebagai server otoritatif + klien vanilla JS.
+Uno multiplayer: profil pemain, matchmaking lawan acak, room privat, dan lawan bot.
+Server = Cloudflare Worker (WebSocket) yang jadi satu-satunya penentu sah/tidaknya aksi.
+
+![preview tabel](docs/preview-table.jpg)
+
+## Fitur
+
+- **Profil pemain** — nama (maks 16 karakter) + 14 avatar default, **atau upload foto
+  sendiri** ke CDN INS. Disimpan di `localStorage`, jadi tidak perlu daftar akun dan
+  tetap ada setelah refresh.
+- **Cari Lawan** — matchmaking lawan acak. Kalau tidak ada pemain lain dalam ~7 detik,
+  lawan diisi bot supaya tetap bisa langsung main.
+- **Main Lawan Bot** — room instan berisi kamu + 1 bot.
+- **Buat Room** — kode 5 karakter untuk dibagikan ke teman, plus tombol tambah/hapus
+  bot (maks 3) sebelum mulai.
+- **Hak host** — hanya pembuat room yang bisa menambah bot, menghapus bot, dan
+  memulai game. Host otomatis dialihkan kalau pembuatnya keluar.
+- **Bot** — memilih kartu berwarna sama lebih dulu, menyimpan Wild selama masih ada
+  kartu normal, memakai kartu serang saat lawan hampir habis, dan memilih warna
+  terbanyak di tangannya. Ada jeda berpikir 0,7–1,4 detik supaya terasa natural.
+- **Anti-curang** — identitas pemain diambil dari koneksi WebSocket (bukan dari isi
+  pesan), tangan lawan hanya dikirim sebagai jumlah kartu, dan seluruh aturan
+  divalidasi ulang di server.
 
 ## Struktur
 
@@ -9,46 +31,16 @@ client/                    # file statis yang disajikan Worker (assets)
   index.html
   app.js
   style.css
-  assets/cards/            # 55 gambar kartu (400x620)
+  assets/cards/            # 54 muka + 2 punggung kartu (400x620)
+  assets/avatars/          # 14 avatar + fallback (256x256)
   assets/table/felt.jpg    # latar meja
-server/index.js            # Worker: WebSocket + seluruh validasi permainan
-shared/uno-logic.js        # logika inti Uno (hanya dijalankan di server)
-tools/generate_cards.py    # generator aset kartu (PNG)
-tests/                     # tes logika + tes E2E server
+server/index.js            # Worker: WebSocket, lobby, matchmaking, bot, validasi
+shared/uno-logic.js        # aturan inti Uno
+shared/uno-bot.js          # kecerdasan bot
+tools/generate_cards.py    # generator aset kartu
+tools/generate_avatars.py  # generator aset avatar
+tests/                     # tes logika, bot, dan E2E server
 wrangler.toml
-```
-
-## Aset kartu
-
-![preview](docs/preview-cards.png)
-![preview](docs/preview-table.jpg)
-
-54 muka kartu + 2 punggung kartu, semua 400x620 px:
-
-| Pola nama | Jumlah | Contoh |
-|---|---|---|
-| `{WARNA}_{0-9}.png` | 40 | `RED_5.png` |
-| `{WARNA}_{SKIP\|REVERSE\|DRAW_TWO}.png` | 12 | `BLUE_REVERSE.png` |
-| `WILD.png`, `WILD_DRAW_FOUR.png` | 2 | — |
-| `BACK.png`, `BACK_ornate.jpg` | 2 | punggung kartu |
-
-Warna: `RED`, `YELLOW`, `GREEN`, `BLUE`.
-
-Kartu digambar secara **vektor/deterministik** (bukan AI) supaya angka dan simbolnya
-konsisten di semua kartu dan tajam di ukuran berapa pun. Regenerate kapan saja:
-
-```bash
-npm run cards          # = python3 tools/generate_cards.py
-```
-
-Butuh `Pillow` (`pip install Pillow`). Skrip ini menulis ulang `BACK.png` tetapi
-**tidak** menyentuh `BACK_ornate.jpg`, jadi varian punggung kartu tetap aman.
-
-Ganti punggung kartu di `client/index.html`:
-
-```html
-<img id="drawPile" class="card-back-img" src="assets/cards/BACK_ornate.jpg" ...>
-<!-- ganti ke assets/cards/BACK.png untuk versi flat -->
 ```
 
 ## Menjalankan
@@ -59,10 +51,9 @@ npm run dev      # http://localhost:8787
 npm run deploy   # deploy ke Cloudflare
 ```
 
-Buka dua jendela browser di `http://localhost:8787`:
-1. Klik **Buat Room Baru** → salin kode room.
-2. Di jendela kedua, masukkan kode → **Gabung Room**.
-3. Salah satu pemain menekan **Mulai Game** (butuh minimal 2 pemain).
+Cara paling cepat mencoba: buka `http://localhost:8787`, isi nama + pilih avatar,
+lalu klik **Main Lawan Bot**. Untuk mencoba matchmaking sungguhan, buka dua jendela
+browser dan klik **Cari Lawan** di keduanya.
 
 ## Tes
 
@@ -70,38 +61,126 @@ Buka dua jendela browser di `http://localhost:8787`:
 npm test
 ```
 
-- `tests/sim.mjs` — menguji `shared/uno-logic.js`: dek 108 kartu, pembagian 7 kartu,
-  validasi kartu, anti-cheat (kartu harus ada di tangan), efek SKIP/REVERSE/DRAW_TWO/WILD_DRAW_FOUR,
-  reshuffle saat dek habis, dan 30 simulasi game sampai ada pemenang.
-- `tests/server-e2e.mjs` — menjalankan `server/index.js` di Node dengan mock WebSocket:
-  buat/gabung room, mulai game, giliran, anti-impersonasi, game over, join saat game berjalan,
-  keluar saat game berjalan, dan pembersihan room.
+| Berkas | Cakupan |
+|---|---|
+| `tests/sim.mjs` | dek 108 kartu, aturan main, anti-cheat, efek kartu khusus, reshuffle, 30 game sampai selesai |
+| `tests/bot.mjs` | identitas bot, strategi (kartu normal sebelum Wild, warna mayoritas), 40 game bot penuh |
+| `tests/server-e2e.mjs` | profil, avatar custom, lobby, hak host, bot jalan sendiri, matchmaking, fallback bot, keluar saat game |
+| `tests/cdn-upload.mjs` | **tidak ikut `npm test`** — upload sungguhan ke CDN INS. Jalankan `npm run test:cdn` |
 
-## Protokol pesan (klien → server)
+## Avatar upload — integrasi CDN INS
+
+Pemain bisa memilih salah satu dari **14 avatar bawaan**, atau meng-upload fotonya
+sendiri. Foto dipotong tengah dan diperkecil ke **256x256 JPEG** di browser dulu
+(hemat bandwidth), lalu dikirim langsung ke CDN — tidak lewat Worker.
+
+### Kontrak CDN (sudah diverifikasi)
+
+```
+POST https://cdnins.insjay.biz.id/upload-send
+  header : x-user-id: <id pemilik file>
+           x-filename: <nama file>
+  body   : multipart/form-data, field "file"
+
+respons 200:
+{
+  "success": true,
+  "url"            : "https://cloudins-cdn.insjay.biz.id/media/<hash>",
+  "public_url"     : "https://cloudins-cdn.insjay.biz.id/media/<hash>",
+  "fix_url"        : "https://cloudins-cdn.insjay.biz.id/<user>/media/<nama>",
+  "user_media_url" : "https://cloudins-cdn.insjay.biz.id/<user>/media/<nama>",
+  "filename"       : "..."
+}
+```
+
+Host media berbeda dari host API: API di `cdnins.insjay.biz.id`, file publik di
+`cloudins-cdn.insjay.biz.id`. Keduanya sudah masuk allow-list di server.
+
+Yang dipakai sebagai `avatarUrl` adalah `public_url` karena URL-nya unik per upload —
+`fix_url` memakai nama file yang sama, sedangkan CDN mengirim
+`cache-control: public, max-age=31536000`, jadi re-upload bisa kena cache lama.
+
+### Di mana konfigurasinya
+
+| Berkas | Konstanta | Isi |
+|---|---|---|
+| `client/app.js` | `CDN` | URL upload, host yang diizinkan, batas ukuran, ukuran output |
+| `server/index.js` | `AVATAR_URL_HOSTS` | allow-list host yang boleh dipakai sebagai `avatarUrl` |
+
+### Catatan keamanan
+
+- **Wajib HTTPS.** Halaman game berjalan di HTTPS, jadi permintaan ke `http://`
+  akan diblokir browser sebagai mixed content.
+- **`avatarUrl` divalidasi ketat di server.** Hanya `https:` + host di allow-list
+  yang diterima; host asing, skema `javascript:`, dan domain mirip
+  (`...insjay.biz.id.evil.com`) semuanya ditolak dan jatuh ke avatar bawaan.
+- **CDN-nya tidak punya autentikasi.** `x-user-id` hanya nama, jadi siapa pun yang
+  tahu endpoint bisa menulis ke sana. Karena itu tiap browser memakai ID acak
+  16 hex (`uno-<16 hex>`) yang berfungsi seperti kunci, bukan nama pemain.
+  Kalau CDN ini dipakai untuk hal serius, sebaiknya tambahkan token di sisi CDN.
+- Kalau upload gagal (CDN mati/offline), pemain **tetap bisa main** memakai avatar
+  bawaan — tidak ada alur permainan yang bergantung pada CDN.
+
+### Kalau CDN berubah
+
+Ubah `CDN.uploadUrl` di `client/app.js` dan `AVATAR_URL_HOSTS` di `server/index.js`,
+lalu jalankan:
+
+```bash
+npm run test:cdn
+```
+
+## Protokol pesan
+
+### Klien → server
 
 | Tipe | Payload | Keterangan |
 |---|---|---|
-| `CREATE_ROOM` | `playerId` | Membuat room baru |
-| `JOIN_ROOM` | `roomCode`, `playerId` | Masuk ke room (ditolak bila game sudah berjalan) |
+| `CREATE_ROOM` | `playerId`, `profile` | Buat room privat, pengirim jadi host |
+| `JOIN_ROOM` | `roomCode`, `playerId`, `profile` | Gabung room (ditolak bila game berjalan) |
+| `FIND_MATCH` | `playerId`, `profile` | Masuk antrean matchmaking |
+| `CANCEL_MATCH` | – | Keluar dari antrean |
 | `LEAVE_ROOM` | – | Keluar dari room |
-| `START_GAME` | – | Mulai game (min. 2 pemain, hanya bisa saat game belum jalan) |
-| `PLAY_CARD` | `card:{color,type}`, `chosenColor` | Main kartu; `chosenColor` wajib untuk Wild |
+| `ADD_BOT` / `REMOVE_BOT` | `botId` | Kelola bot (khusus host, hanya sebelum game) |
+| `START_GAME` | – | Mulai game (khusus host, min. 2 pemain) |
+| `PLAY_CARD` | `card:{color,type}`, `chosenColor` | `chosenColor` wajib untuk Wild |
 | `DRAW_CARD` | – | Ambil satu kartu lalu akhiri giliran |
 
-Identitas pemain diambil dari koneksi WebSocket di sisi server, **bukan** dari `playerId` di setiap pesan.
+`profile` = `{ name: string (1–16), avatar: 'a01'…'a14', avatarUrl?: string }` —
+`avatarUrl` opsional, hanya diterima bila host-nya ada di allow-list CDN.
 
-## Protokol pesan (server → klien)
+### Server → klien
 
-`ROOM_CREATED`, `ROOM_JOINED`, `PLAYER_JOINED`, `PLAYER_LEFT`,
-`GAME_STARTED`, `GAME_STATE_UPDATE`, `GAME_OVER`, `GAME_ABORTED`, `ERROR`.
+`ROOM_CREATED`, `ROOM_JOINED`, `ROOM_UPDATE`, `PLAYER_LEFT`, `MATCH_SEARCHING`,
+`MATCH_FOUND`, `MATCH_BOT_FILLED`, `MATCH_CANCELLED`, `GAME_STARTED`,
+`GAME_STATE_UPDATE`, `GAME_OVER`, `GAME_ABORTED`, `ERROR`.
 
-`GAME_STATE_UPDATE` hanya memuat tangan milik penerima; tangan pemain lain
-dikirim sebagai `{ id, count, isYou }`.
+`GAME_STATE_UPDATE.gameState.players` = `[{ id, name, avatar, isBot, count, isYou }]` —
+hanya tangan milik penerima yang dikirim penuh.
 
-## Catatan arsitektur
+## Aset
 
-State room disimpan di `Map` tingkat modul. Ini cukup untuk `wrangler dev` dan
-traffic ringan pada satu isolate, tetapi **tidak dijamin persisten**: isolate
-Cloudflare bisa didaur ulang, dan beberapa isolate tidak saling berbagi `Map`.
-Untuk produksi serius, pindahkan state room ke
-[Durable Objects](https://developers.cloudflare.com/durable-objects/) satu object per room.
+Semua kartu dan avatar digambar **deterministik** (bukan AI) supaya angka, simbol, dan
+gayanya konsisten serta tajam di ukuran apa pun. Regenerate kapan saja:
+
+```bash
+npm run cards      # 54 muka + 2 punggung kartu
+npm run avatars    # 14 avatar + fallback
+```
+
+Butuh `Pillow` (`pip install Pillow`).
+
+![preview kartu](docs/preview-cards.png)
+![preview avatar](docs/preview-avatars.png)
+
+Punggung kartu default adalah `BACK_ornate.jpg` (ilustrasi ornamen). Ganti ke
+`assets/cards/BACK.png` di `client/index.html` kalau mau versi flat hasil generator.
+
+## Batasan yang perlu diketahui
+
+- State room disimpan di `Map` tingkat modul pada Worker. Cukup untuk `wrangler dev`
+  dan traffic ringan pada satu isolate, tetapi **tidak dijamin bertahan antar-isolate**.
+  Untuk produksi serius pindahkan ke **Durable Objects** (satu object per room).
+- Jeda bot memakai `setTimeout`, yang ikut mati kalau isolate Worker didaur ulang.
+- Belum ada: stacking +2/+4, challenge Wild Draw Four, skor antar ronde, dan
+  reconnect otomatis (refresh halaman = keluar dari room).
