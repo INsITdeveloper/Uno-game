@@ -1,53 +1,60 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Uno Online</title>
-    <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0c1a16">
+<title>Uno Online</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="app">
+
     <header class="brand">
-        <span class="brand-mark">UNO</span>
+        <span class="logo-uno">UNO</span>
         <span class="brand-sub">Online</span>
         <span class="conn" id="connState"></span>
     </header>
 
-    <!-- 1. Profil ------------------------------------------------------------>
+    <!-- ============ Profil ============ -->
     <section class="screen" id="screenProfile" hidden>
-        <h2>Buat Profil</h2>
-        <p class="hint">Nama dan avatar ini yang akan dilihat pemain lain.</p>
-        <label class="field">
-            <span>Nama pemain</span>
-            <input type="text" id="nameInput" maxlength="16" placeholder="mis. Budi"
-                   autocomplete="off" spellcheck="false">
-        </label>
-        <div class="custom-avatar">
-            <img id="avatarPreview" alt="Pratinjau avatar">
-            <div class="ca-text">
-                <strong id="avatarPreviewLabel">Avatar bawaan</strong>
-                <div class="ca-actions">
-                    <button type="button" id="uploadAvatarBtn">Upload foto sendiri</button>
-                    <button type="button" id="clearAvatarBtn" class="secondary" hidden>Pakai avatar bawaan</button>
-                </div>
-                <p class="hint" id="avatarUploadStatus">JPG/PNG/WebP, otomatis dipotong ke 256&times;256.</p>
-            </div>
-        </div>
-        <input type="file" id="avatarFileInput" accept="image/*" hidden>
+        <div class="panel">
+            <h2>Bikin Profil</h2>
+            <p class="hint">Nama dan avatar ini yang akan dilihat pemain lain.</p>
 
-        <p class="hint">Atau pilih avatar bawaan:</p>
-        <div class="avatar-grid" id="avatarGrid"></div>
-        <p class="error-text" id="profileError" hidden></p>
-        <button id="saveProfileBtn" class="primary wide">Simpan &amp; Lanjut</button>
+            <label class="field">
+                <span>Nama pemain</span>
+                <input type="text" id="nameInput" maxlength="16" placeholder="mis. Budi"
+                       autocomplete="off" spellcheck="false">
+            </label>
+
+            <div class="custom-avatar">
+                <div class="avatar-ring"><img id="avatarPreview" alt="Pratinjau avatar"></div>
+                <div class="ca-text">
+                    <strong id="avatarPreviewLabel">Avatar bawaan</strong>
+                    <div class="ca-actions">
+                        <button type="button" id="uploadAvatarBtn">Upload foto sendiri</button>
+                        <button type="button" id="clearAvatarBtn" class="secondary" hidden>Pakai avatar bawaan</button>
+                    </div>
+                    <p class="hint" id="avatarUploadStatus">JPG/PNG/WebP, dipotong otomatis ke 256&times;256.</p>
+                </div>
+            </div>
+            <input type="file" id="avatarFileInput" accept="image/*" hidden>
+
+            <p class="hint">Atau pilih avatar bawaan:</p>
+            <div class="avatar-grid" id="avatarGrid"></div>
+
+            <p class="error-text" id="profileError" hidden></p>
+            <button id="saveProfileBtn" class="primary wide">Simpan &amp; Lanjut</button>
+        </div>
     </section>
 
-    <!-- 2. Menu utama -------------------------------------------------------->
+    <!-- ============ Menu utama ============ -->
     <section class="screen" id="screenHome" hidden>
         <div class="profile-chip">
-            <img id="profileAvatar" alt="Avatar kamu">
+            <div class="avatar-ring"><img id="profileAvatar" alt="Avatar kamu"></div>
             <div class="pc-text">
-                <strong id="profileName">—</strong>
+                <strong id="profileName">&mdash;</strong>
                 <button id="editProfileBtn" class="link">Ubah profil</button>
             </div>
         </div>
@@ -55,7 +62,7 @@
         <div class="menu">
             <button class="menu-item accent" id="quickMatchBtn">
                 <span class="mi-title">Cari Lawan</span>
-                <span class="mi-sub">Lawan acak dari pemain online</span>
+                <span class="mi-sub">Dipasangkan acak dengan pemain online</span>
             </button>
             <button class="menu-item" id="botGameBtn">
                 <span class="mi-title">Main Lawan Bot</span>
@@ -76,10 +83,10 @@
         </div>
     </section>
 
-    <!-- 3. Mencari lawan ----------------------------------------------------->
+    <!-- ============ Mencari lawan ============ -->
     <section class="screen centered" id="screenSearch" hidden>
-        <div class="spinner"></div>
-        <h2 id="searchTitle">Mencari lawan…</h2>
+        <div class="radar"><span>🎯</span></div>
+        <h2 id="searchTitle">Mencari lawan&hellip;</h2>
         <p class="hint" id="searchHint">Menunggu pemain lain bergabung.</p>
         <div class="row">
             <button id="searchBotBtn" class="primary">Lawan Bot saja</button>
@@ -87,40 +94,49 @@
         </div>
     </section>
 
-    <!-- 4. Lobby room -------------------------------------------------------->
+    <!-- ============ Lobby room ============ -->
     <section class="screen" id="screenRoom" hidden>
-        <h2>Room <span class="room-code" id="roomCodeLabel">-----</span></h2>
-        <p class="hint">Bagikan kode ini ke temanmu, atau tambah bot untuk langsung main.</p>
-        <div class="player-grid" id="lobbyPlayers"></div>
-        <div class="row">
-            <button id="addBotBtn">+ Tambah Bot</button>
-            <button id="startGameBtn" class="primary">Mulai Game</button>
-            <button id="leaveRoomBtn" class="secondary">Keluar</button>
+        <div class="panel">
+            <h2>Room <span class="room-code" id="roomCodeLabel">-----</span></h2>
+            <p class="hint">Bagikan kode ini ke temanmu, atau tambah bot untuk langsung main.</p>
+            <div class="player-grid" id="lobbyPlayers"></div>
+            <div class="row">
+                <button id="addBotBtn">+ Tambah Bot</button>
+                <button id="startGameBtn" class="primary">Mulai Game</button>
+                <button id="leaveRoomBtn" class="secondary">Keluar</button>
+            </div>
+            <p class="hint" id="hostHint" hidden>Hanya pembuat room yang bisa menambah bot dan memulai game.</p>
         </div>
-        <p class="hint" id="hostHint" hidden>Hanya pembuat room yang bisa menambah bot dan memulai game.</p>
     </section>
 
-    <!-- 5. Papan permainan --------------------------------------------------->
+    <!-- ============ Meja permainan ============ -->
     <section class="screen" id="screenGame" hidden>
-        <div class="board-top">
-            <span id="turnIndicator" class="turn-indicator">Menunggu…</span>
-            <span id="activeColor" class="active-color"></span>
-            <span id="deckInfo" class="deck-info"></span>
+        <div class="table-wrap">
+            <div class="table-felt">
+                <div class="seats" id="opponents"></div>
+
+                <div class="table-center">
+                    <div class="pile">
+                        <!-- Ganti ke assets/cards/BACK.png untuk punggung kartu versi flat -->
+                        <img id="drawPile" class="card-back-img" src="assets/cards/BACK_ornate.jpg"
+                             alt="Tumpukan kartu" title="Klik untuk ambil kartu" draggable="false">
+                        <span class="pile-label" id="deckInfo">Dek</span>
+                    </div>
+                    <div class="pile">
+                        <div class="card-display" id="discardPileTopCard"></div>
+                        <span class="pile-label" id="activeColor">Warna</span>
+                    </div>
+                </div>
+
+                <div class="turn-banner" id="turnIndicator">Menunggu&hellip;</div>
+            </div>
         </div>
 
-        <div id="opponents" class="opponents"></div>
-
-        <div class="discard-pile">
-            <!-- Ganti ke assets/cards/BACK.png untuk punggung kartu versi flat -->
-            <img id="drawPile" class="card-back-img" src="assets/cards/BACK_ornate.jpg"
-                 alt="Tumpukan kartu" title="Klik untuk ambil kartu" draggable="false">
-            <div class="card-display" id="discardPileTopCard"></div>
-        </div>
-
-        <div class="player-area" id="playerHand">
-            <h2>Tanganmu</h2>
+        <div class="hand-zone" id="playerHand">
             <div class="hand-cards"></div>
-            <button id="drawCardBtn">Ambil Kartu</button>
+            <div class="hand-actions">
+                <button id="drawCardBtn" class="secondary">Ambil Kartu</button>
+            </div>
         </div>
 
         <div class="row game-actions">
@@ -129,7 +145,7 @@
         </div>
     </section>
 
-    <!-- Obrolan room -->
+    <!-- ============ Obrolan ============ -->
     <section class="chat-panel" id="chatPanel" hidden>
         <header class="chat-head">
             <span>Obrolan</span>

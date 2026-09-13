@@ -161,6 +161,17 @@ function applyAvatar(img, source) {
     return img;
 }
 
+/** Bungkus avatar dalam cincin bulat ala game. */
+function avatarRing(source) {
+    const ring = document.createElement('div');
+    ring.className = 'avatar-ring';
+    const img = document.createElement('img');
+    applyAvatar(img, source);
+    img.alt = '';
+    ring.appendChild(img);
+    return ring;
+}
+
 function setAvatarStatus(text, kind = 'info') {
     el.avatarUploadStatus.textContent = text;
     el.avatarUploadStatus.className = 'hint upload-' + kind;
@@ -310,10 +321,7 @@ function appendChat(msg) {
     const line = document.createElement('div');
     line.className = 'chat-line' + (mine ? ' mine' : '');
 
-    const img = document.createElement('img');
-    applyAvatar(img, { avatar: msg.avatar, avatarUrl: msg.avatarUrl });
-    img.alt = '';
-    line.appendChild(img);
+    line.appendChild(avatarRing({ avatar: msg.avatar, avatarUrl: msg.avatarUrl }));
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
@@ -504,17 +512,14 @@ function renderLobby() {
         if (p.id === app.localPlayerId) card.classList.add('is-me');
         if (p.isBot) card.classList.add('is-bot');
 
-        const img = document.createElement('img');
-        applyAvatar(img, p);
-        img.alt = '';
-        card.appendChild(img);
+        card.appendChild(avatarRing(p));
 
         const info = document.createElement('div');
         info.className = 'pc-info';
         const nm = document.createElement('strong');
         nm.textContent = p.name + (p.id === app.localPlayerId ? ' (kamu)' : '');
         const tag = document.createElement('span');
-        tag.className = 'tag';
+        tag.className = 'tag' + (p.isBot ? ' bot' : (p.id === app.hostId ? ' host' : ''));
         tag.textContent = p.isBot ? 'BOT' : (p.id === app.hostId ? 'HOST' : 'Pemain ' + (i + 1));
         info.appendChild(nm);
         info.appendChild(tag);
@@ -602,51 +607,88 @@ function renderGame() {
     app.isMyTurn = isMyTurn && game.winner === null;
 
     const current = (game.players || []).find((p) => p.id === game.currentPlayerId);
+    el.turnIndicator.innerHTML = '';
     if (game.winner !== null) {
-        el.turnIndicator.textContent = 'Game selesai';
+        el.turnIndicator.textContent = '🏁 Game selesai';
     } else if (isMyTurn) {
         el.turnIndicator.textContent = '⭐ GILIRAN KAMU';
+    } else if (current) {
+        el.turnIndicator.appendChild(avatarRing(current));
+        const who = document.createElement('span');
+        who.textContent = `Giliran ${current.name}`;
+        el.turnIndicator.appendChild(who);
     } else {
-        el.turnIndicator.textContent = current ? `Giliran ${current.name}…` : 'Menunggu…';
+        el.turnIndicator.textContent = 'Menunggu…';
     }
     el.turnIndicator.classList.toggle('mine', isMyTurn && game.winner === null);
 
-    el.activeColor.textContent = 'Warna: ' + colorLabel(game.currentColor);
+    el.activeColor.textContent = colorLabel(game.currentColor);
     el.deckInfo.textContent =
-        `Dek ${game.deckCount}` + (game.direction === -1 ? ' • arah terbalik' : '');
+        `Dek ${game.deckCount}` + (game.direction === -1 ? ' ↺' : '');
 
-    // Lawan
+    // Cahaya di tumpukan buangan mengikuti warna aktif
+    const glow = {
+        RED: 'rgba(255,107,107,.5)',
+        YELLOW: 'rgba(255,217,100,.5)',
+        GREEN: 'rgba(86,217,138,.5)',
+        BLUE: 'rgba(90,168,245,.5)'
+    }[game.currentColor] || 'transparent';
+    el.discardPileTopCard.style.setProperty('--glow', glow);
+
+    // Kursi lawan di sekeliling meja
     el.opponents.innerHTML = '';
     (game.players || []).forEach((p) => {
         if (p.isYou) return;
-        const chip = document.createElement('div');
-        chip.className = 'opponent';
-        if (p.id === game.currentPlayerId) chip.classList.add('active');
 
-        const img = document.createElement('img');
-        applyAvatar(img, p);
-        img.alt = '';
-        chip.appendChild(img);
+        const seat = document.createElement('div');
+        seat.className = 'seat';
+        if (p.id === game.currentPlayerId) seat.classList.add('active');
+        if (p.count === 0) seat.classList.add('out');
 
-        const box = document.createElement('div');
-        box.className = 'opp-text';
-        const nm = document.createElement('strong');
+        seat.appendChild(avatarRing(p));
+
+        const nm = document.createElement('span');
+        nm.className = 'seat-name';
         nm.textContent = p.name + (p.isBot ? ' 🤖' : '');
-        const cnt = document.createElement('span');
-        cnt.textContent = `${p.count} kartu`;
-        box.appendChild(nm);
-        box.appendChild(cnt);
-        chip.appendChild(box);
+        seat.appendChild(nm);
 
-        el.opponents.appendChild(chip);
+        const line = document.createElement('div');
+        line.className = 'seat-cards';
+        if (p.count > 0) {
+            const mini = document.createElement('div');
+            mini.className = 'mini-stack';
+            for (let i = 0; i < Math.min(p.count, 5); i++) mini.appendChild(document.createElement('i'));
+            line.appendChild(mini);
+        }
+        const badge = document.createElement('span');
+        badge.className = 'count-badge';
+        badge.textContent = `${p.count} kartu`;
+        line.appendChild(badge);
+        seat.appendChild(line);
+
+        el.opponents.appendChild(seat);
     });
 
-    // Tangan sendiri
+    // Tangan sendiri — kartu dikipas seperti sedang dipegang
     el.playerHand.innerHTML = '';
-    (game.playerHand || []).forEach((card, index) => {
+    const hand = game.playerHand || [];
+    const n = hand.length;
+    const mid = (n - 1) / 2;
+    const overlap = n <= 8 ? 16 : (n <= 12 ? 28 : 38);
+    el.playerHand.style.setProperty('--overlap', `${overlap}px`);
+
+    hand.forEach((card, index) => {
         const playable = game.winner === null && isMyTurn &&
             isCardPlayable(card, topCard, game.currentColor);
         const cardEl = createCardElement(card, { playable, onClick: () => handlePlayCard(card) });
+
+        const d = index - mid;
+        const rot = Math.min(Math.abs(d), 6) * (d < 0 ? -1 : 1) * 3;
+        cardEl.style.setProperty('--rot', `${rot.toFixed(2)}deg`);
+        cardEl.style.setProperty('--lift', `${(Math.abs(d) * 4).toFixed(1)}px`);
+        cardEl.style.setProperty('--z', String(index + 1));
+        cardEl.classList.add('deal-in');
+        cardEl.style.animationDelay = `${Math.min(index * 40, 400)}ms`;
         cardEl.dataset.cardIndexInHand = index;
         el.playerHand.appendChild(cardEl);
     });

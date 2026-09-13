@@ -3,7 +3,9 @@
 Uno multiplayer: profil pemain, matchmaking lawan acak, room privat, dan lawan bot.
 Server = Cloudflare Worker (WebSocket) yang jadi satu-satunya penentu sah/tidaknya aksi.
 
-![preview tabel](docs/preview-table.jpg)
+![preview meja permainan](docs/preview-game.jpg)
+
+![preview menu](docs/preview-menu.jpg)
 
 ## Fitur
 
